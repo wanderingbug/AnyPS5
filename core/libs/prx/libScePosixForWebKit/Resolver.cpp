@@ -115,6 +115,36 @@ GuestResolver::HostEntry* APS5_VABI gethostbyname_nid_postfix(const char* name) 
             *sceNetErrnoLoc() = error == WSAHOST_NOT_FOUND ? 1 : error == WSATRY_AGAIN ? 2 : error == WSANO_DATA ? 4 : 3;
             return nullptr;
         }
+#elif defined(__APPLE__)
+        std::vector<std::array<unsigned char, 4>> resolved;
+        std::vector<char*> resolvedPointers;
+        if (!numeric) {
+            addrinfo hints{};
+            hints.ai_family = AF_INET;
+            addrinfo* result = nullptr;
+            const int lookup = ::getaddrinfo(name, nullptr, &hints, &result);
+            if (lookup != 0 || result == nullptr) {
+                if (result != nullptr) ::freeaddrinfo(result);
+                *sceNetErrnoLoc() = lookup == EAI_NONAME ? 1 : lookup == EAI_AGAIN ? 2 : 3;
+                return nullptr;
+            }
+            for (const addrinfo* info = result; info != nullptr; info = info->ai_next) {
+                if (info->ai_family != AF_INET || info->ai_addr == nullptr || info->ai_addrlen < sizeof(sockaddr_in)) continue;
+                const auto* inet = reinterpret_cast<const sockaddr_in*>(info->ai_addr);
+                std::array<unsigned char, 4> bytes{};
+                std::memcpy(bytes.data(), &inet->sin_addr, sizeof(bytes));
+                resolved.push_back(bytes);
+            }
+            ::freeaddrinfo(result);
+            if (resolved.empty()) {
+                *sceNetErrnoLoc() = 4;
+                return nullptr;
+            }
+            resolvedPointers.reserve(resolved.size() + 1);
+            for (auto& bytes : resolved) resolvedPointers.push_back(reinterpret_cast<char*>(bytes.data()));
+            resolvedPointers.push_back(nullptr);
+            nativeEntry.h_addr_list = resolvedPointers.data();
+        }
 #else
         std::vector<char> buffer;
         int hostError = 0;
