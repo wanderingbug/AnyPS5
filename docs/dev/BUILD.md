@@ -50,6 +50,36 @@ therefore tests the previous binaries and can show no effect at all.
 
 [Relinker usage and runtime layout](../user/USAGE.md).
 
+## macOS
+
+The full build, including the prx libraries, targets x86-64 and runs under Rosetta 2 on Apple Silicon. AppleClang cross-compiles that slice on an Apple Silicon Mac; Rosetta is required to run the binaries, not to compile them. The relinker-only build can stay a native arm64 tool. Use a separate build directory from `build-relinker`.
+
+Install the Xcode command-line tools, CMake 3.22.1 or newer, and Ninja. Homebrew's CMake and Ninja may be arm64; that is enough to drive the x86-64 compile.
+
+```sh
+xcode-select --install
+softwareupdate --install-rosetta --agree-to-license
+brew install cmake ninja
+git submodule update --init --recursive
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64
+cmake --build build --parallel
+cmake --build build --target libs --parallel
+```
+
+`libs` is still required. The default `BUILD_TESTING=OFF` build does not compile the prx libraries, and it does not run tests. Guest memory mapping is not implemented: a title that maps memory throws.
+
+Configuration downloads `ffmpeg-macos-x64.zip` from the `ext-ffmpeg-core` release named by the `3rdparty/ffmpeg-core` submodule's 12-character commit (`https://github.com/KytyPS5/ext-ffmpeg-core/releases/download/<sha>/ffmpeg-macos-x64.zip`) and unpacks it under the build directory. To skip the download, unpack that zip, or build the matching `ffmpeg-source-macos-x64.tar.gz` from the same release for x86-64, and pass `-DFFMPEG_PREBUILT_DIR=<path>`. The directory must contain `include/libavcodec/avcodec.h` and `lib/libavcodec.a` (and the other FFmpeg static libraries the package ships).
+
+Vulkan is loaded at run time and is not required to compile. To run a title, install an x86-64 Vulkan loader and MoltenVK. An arm64 Homebrew bottle will not load into the x86-64 process. With an x86-64 Homebrew (the `/usr/local` prefix under Rosetta):
+
+```sh
+arch -x86_64 /usr/local/bin/brew install molten-vk vulkan-loader
+```
+
+The LunarG macOS Vulkan SDK is the other source of `libvulkan.dylib` and MoltenVK. The driver opens `libvulkan.dylib`, then `libMoltenVK.dylib`.
+
+`APS5_THREAD_PRIORITY=high` sets `QOS_CLASS_USER_INITIATED` on the calling thread, and `rt` sets `QOS_CLASS_USER_INTERACTIVE`. There is no rtkit. CPU pinning is a no-op.
+
 ## CMake flags
 
 Project switches accept `ON` or `OFF`:
@@ -116,7 +146,7 @@ Set `APS5_PIPELINE_STATS=1` to capture and print driver statistics for each newl
 
 ## Driver thread priority
 
-Set `APS5_THREAD_PRIORITY=high` to raise the AGC driver's queue workers and the video output presenter above the title's threads. On Linux the threads get nice `APS5_THREAD_NICE` (default -10) through rtkit; on Windows they get `THREAD_PRIORITY_HIGHEST`. `APS5_THREAD_PRIORITY=rt` asks rtkit for real-time priority `APS5_THREAD_RT` (default 10, at most rtkit's `MaxRealtimePriority`) under rtkit's policy, `SCHED_RR` by default; on Windows it sets `THREAD_PRIORITY_TIME_CRITICAL`. rtkit only grants it when the process's hard `RLIMIT_RTTIME` is at most its `RTTimeUSecMax` (200000 us by default), so a hard limit above `APS5_THREAD_RTTIME_US` (default 200000, capped at `RTTimeUSecMax`) is lowered to it and the soft limit to at most half of it. The hard limit cannot be raised again and stays lowered for the whole process even if rtkit then refuses; see [technical debt](TechnicalDebt.md#functional). There is no fallback between the modes: when rtkit or `SetThreadPriority` refuses, a queue worker reports the refusal as a driver failure, which the next submission, wait or shutdown rethrows, and the presenter's start throws it. Each raised thread logs its priority once as `[thread-priority]`. The setting is `off` by default; a value other than `off`, `high` or `rt` is reported the same way as a refusal.
+Set `APS5_THREAD_PRIORITY=high` to raise the AGC driver's queue workers and the video output presenter above the title's threads. On Linux the threads get nice `APS5_THREAD_NICE` (default -10) through rtkit; on Windows they get `THREAD_PRIORITY_HIGHEST`. `APS5_THREAD_PRIORITY=rt` asks rtkit for real-time priority `APS5_THREAD_RT` (default 10, at most rtkit's `MaxRealtimePriority`) under rtkit's policy, `SCHED_RR` by default; on Windows it sets `THREAD_PRIORITY_TIME_CRITICAL`. rtkit only grants it when the process's hard `RLIMIT_RTTIME` is at most its `RTTimeUSecMax` (200000 us by default), so a hard limit above `APS5_THREAD_RTTIME_US` (default 200000, capped at `RTTimeUSecMax`) is lowered to it and the soft limit to at most half of it. The hard limit cannot be raised again and stays lowered for the whole process even if rtkit then refuses; see [technical debt](TechnicalDebt.md#functional). There is no fallback between the modes: when rtkit or `SetThreadPriority` refuses, a queue worker reports the refusal as a driver failure, which the next submission, wait or shutdown rethrows, and the presenter's start throws it. Each raised thread logs its priority once as `[thread-priority]`. The setting is `off` by default; a value other than `off`, `high` or `rt` is reported the same way as a refusal. On macOS the same setting sets a QoS class on the calling thread; see [macOS](#macos).
 
 ## Shader recompiler
 

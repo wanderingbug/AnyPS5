@@ -63,6 +63,9 @@ int APS5_VABI sigismember_nid_postfix(const GuestSignalSet* set, int signal) {
 #ifdef _WIN32
 #define APS5_SIGNAL_ASM_FUNCTION(name) ".globl " name "\n.def " name "; .scl 2; .type 32; .endef\n" name ":\n"
 #define APS5_SIGNAL_ASM_CALL(name) "    call " name "\n"
+#elif defined(__APPLE__)
+#define APS5_SIGNAL_ASM_FUNCTION(name) ".globl _" name "\n_" name ":\n"
+#define APS5_SIGNAL_ASM_CALL(name) "    call _" name "\n"
 #else
 #define APS5_SIGNAL_ASM_FUNCTION(name) ".globl " name "\n.type " name ", @function\n" name ":\n"
 #define APS5_SIGNAL_ASM_CALL(name) "    call " name "@PLT\n"

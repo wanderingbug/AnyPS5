@@ -6,6 +6,11 @@
     asm(".local " #alias "\n.set " #alias "," #target "\n")
 #define GCC_GLOBAL_ALIAS(alias, target) \
     asm(".globl " #alias "\n.set " #alias "," #target "\n")
+#elif defined(__APPLE__)
+#define GCC_LOCAL_ALIAS(alias, target) \
+    asm(".private_extern _" #alias "\n.set _" #alias ", _" #target "\n")
+#define GCC_GLOBAL_ALIAS(alias, target) \
+    asm(".globl _" #alias "\n.set _" #alias ", _" #target "\n")
 #else
 #define GCC_LOCAL_ALIAS(alias, target)
 #define GCC_GLOBAL_ALIAS(alias, target)

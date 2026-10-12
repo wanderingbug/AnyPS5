@@ -885,6 +885,9 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
     APS5_LOG_OUT("VulkanDevice constructor window=%p", static_cast<const void*>(window));
 #ifdef _WIN32
     state->library = SDL_LoadObject("vulkan-1.dll");
+#elif defined(__APPLE__)
+    state->library = SDL_LoadObject("libvulkan.dylib");
+    if (state->library == nullptr) state->library = SDL_LoadObject("libMoltenVK.dylib");
 #else
     state->library = SDL_LoadObject("libvulkan.so.1");
 #endif

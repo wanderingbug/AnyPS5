@@ -14,6 +14,9 @@
 #include <sched.h>
 #include <string>
 #include <unistd.h>
+#elif defined(__APPLE__)
+#include <pthread.h>
+#include <sys/sysctl.h>
 #endif
 
 // Hybrid CPU layout (Intel P/E cores) from the OS: which logical processors belong to the lowest and
@@ -99,6 +102,26 @@ inline const Layout& Get() {
         result.performant = MaskFromCpuList("/sys/devices/cpu_core/cpus");
         result.efficient = MaskFromCpuList("/sys/devices/cpu_atom/cpus");
         result.hybrid = result.efficient != 0 && result.performant != 0 && (result.efficient & result.performant) == 0;
+#elif defined(__APPLE__)
+        int logical = 0;
+        std::size_t logicalSize = sizeof(logical);
+        if (sysctlbyname("hw.logicalcpu", &logical, &logicalSize, nullptr, 0) == 0 && logical > 0) {
+            if (logical > 64) logical = 64;
+            result.process = logical == 64 ? ~std::uint64_t{0} : (std::uint64_t{1} << logical) - 1;
+        }
+        int levels = 0;
+        int performant = 0;
+        int efficient = 0;
+        std::size_t levelsSize = sizeof(levels);
+        std::size_t countSize = sizeof(performant);
+        if (sysctlbyname("hw.nperflevels", &levels, &levelsSize, nullptr, 0) == 0 && levels >= 2 &&
+            sysctlbyname("hw.perflevel0.logicalcpu", &performant, &countSize, nullptr, 0) == 0 &&
+            sysctlbyname("hw.perflevel1.logicalcpu", &efficient, &countSize, nullptr, 0) == 0 &&
+            performant > 0 && efficient > 0 && performant + efficient <= 64) {
+            result.performant = (std::uint64_t{1} << performant) - 1;
+            result.efficient = ((std::uint64_t{1} << (performant + efficient)) - 1) ^ result.performant;
+            result.hybrid = result.efficient != 0 && result.performant != 0;
+        }
 #endif
         return result;
     }();
@@ -122,6 +145,11 @@ inline unsigned long ThreadId(void* handle) {
     return handle != nullptr ? GetThreadId(static_cast<HANDLE>(handle)) : GetCurrentThreadId();
 #elif defined(__linux__)
     return handle == nullptr ? static_cast<unsigned long>(gettid()) : 0;
+#elif defined(__APPLE__)
+    if (handle != nullptr) return 0;
+    std::uint64_t tid = 0;
+    if (pthread_threadid_np(nullptr, &tid) != 0) return 0;
+    return static_cast<unsigned long>(tid);
 #else
     (void)handle;
     return 0;

@@ -195,7 +195,7 @@ static void UnpinStack(const void* context, std::uint64_t bytes) {
     GuestArena::GuestArenaUnpinWritable_nid_postfix(context, static_cast<std::size_t>(bytes));
 }
 
-#else
+#elif defined(__linux__)
 
 extern "C" void Aps5FiberSwitchStack_nid_no_patch(void** save, void* load);
 extern "C" void Aps5FiberTrampoline_nid_no_patch();
@@ -237,6 +237,49 @@ Aps5FiberTrampoline_nid_no_patch:
     ud2
     .size Aps5FiberTrampoline_nid_no_patch, .-Aps5FiberTrampoline_nid_no_patch
 )");
+
+#elif defined(__APPLE__)
+
+extern "C" void Aps5FiberSwitchStack_nid_no_patch(void** save, void* load);
+extern "C" void Aps5FiberTrampoline_nid_no_patch();
+
+asm(R"(
+    .text
+    .globl _Aps5FiberSwitchStack_nid_no_patch
+_Aps5FiberSwitchStack_nid_no_patch:
+    push %rbp
+    push %rbx
+    push %r12
+    push %r13
+    push %r14
+    push %r15
+    sub $8, %rsp
+    stmxcsr 0(%rsp)
+    fnstcw 4(%rsp)
+    mov %rsp, (%rdi)
+    mov %rsi, %rsp
+    ldmxcsr 0(%rsp)
+    fldcw 4(%rsp)
+    add $8, %rsp
+    pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
+    pop %rbx
+    pop %rbp
+    ret
+
+    .globl _Aps5FiberTrampoline_nid_no_patch
+_Aps5FiberTrampoline_nid_no_patch:
+    mov %r12, %rdi
+    and $-16, %rsp
+    call _Aps5FiberMain_nid_no_patch
+    ud2
+)");
+
+#endif
+
+#ifndef _WIN32
 
 struct InitialFrame {
     std::uint32_t mxcsr;

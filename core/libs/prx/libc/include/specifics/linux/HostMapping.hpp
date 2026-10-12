@@ -10,6 +10,11 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#if defined(__APPLE__)
+#include <libproc.h>
+#include <mach/mach.h>
+#include <unistd.h>
+#else
 #include <sys/ioctl.h>
 #include <unistd.h>
 #if __has_include(<linux/fs.h>)
@@ -41,6 +46,7 @@ enum : std::uint64_t {
 };
 #define PROCMAP_QUERY _IOWR('f', 17, struct procmap_query)
 #endif
+#endif
 
 namespace HostMapping {
 
@@ -50,6 +56,25 @@ struct Mapping {
     std::string path;
 };
 
+#if defined(__APPLE__)
+inline int QueryFd() {
+    return -1;
+}
+
+inline std::optional<Mapping> Find(std::uint64_t address, const char*) {
+    vm_address_t region = static_cast<vm_address_t>(address);
+    vm_size_t size = 0;
+    vm_region_basic_info_64 info{};
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    const kern_return_t result = vm_region_64(mach_task_self(), &region, &size, VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&info), &count, &object);
+    if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+    if (result != KERN_SUCCESS || size == 0 || address < region || address >= region + size) return std::nullopt;
+    char path[PROC_PIDPATHINFO_MAXSIZE] = {};
+    if (proc_regionfilename(getpid(), region, path, sizeof(path)) <= 0) path[0] = '\0';
+    return Mapping{static_cast<std::uint64_t>(region), static_cast<std::uint64_t>(region + size), path};
+}
+#else
 inline int QueryFd() {
     static const int fd = [] {
         if (std::getenv("APS5_NO_PROCMAP_QUERY") != nullptr) return -1;
@@ -102,6 +127,7 @@ inline std::optional<Mapping> Find(std::uint64_t address, const char* caller) {
     }
     return Mapping{query.vma_start, query.vma_end, query.vma_name_size != 0 ? name : ""};
 }
+#endif
 
 }
 

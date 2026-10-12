@@ -21,6 +21,33 @@
 #include <system_error>
 #include <vector>
 
+#if defined(__APPLE__)
+
+namespace {
+
+[[noreturn]] void MacosGuestMemoryTodo(const char* what) {
+    throw std::runtime_error(std::string("TODO: macOS guest memory is not implemented (") + what + ")");
+}
+
+}
+
+int DoMapDirect(void**, size_t, int, int, int64_t, size_t) { MacosGuestMemoryTodo("DoMapDirect"); }
+int DoMapAnon(void**, size_t, int, int, size_t) { MacosGuestMemoryTodo("DoMapAnon"); }
+int DoMapFileBacked_nid_no_patch(void**, size_t, int, int, int, std::uint64_t, size_t) { MacosGuestMemoryTodo("DoMapFileBacked"); }
+int DoMprotect(const void*, size_t, int) { MacosGuestMemoryTodo("DoMprotect"); }
+int DoMtypeprotect(const void*, size_t, int, int) { MacosGuestMemoryTodo("DoMtypeprotect"); }
+int DoMunmap(void*, size_t) { MacosGuestMemoryTodo("DoMunmap"); }
+int DoReserveVirtual(void**, size_t, int, size_t) { MacosGuestMemoryTodo("DoReserveVirtual"); }
+void CreateDirectMemoryBacking(int64_t, size_t, int) { MacosGuestMemoryTodo("CreateDirectMemoryBacking"); }
+void ForgetDirectMemory(int64_t, size_t) { MacosGuestMemoryTodo("ForgetDirectMemory"); }
+bool GuestReservation(std::uintptr_t, std::uintptr_t*, std::uintptr_t*) { MacosGuestMemoryTodo("GuestReservation"); }
+bool GuestProtection(uintptr_t, int*) { MacosGuestMemoryTodo("GuestProtection"); }
+bool QueryDirectMapping(std::uintptr_t, std::uintptr_t*, std::uintptr_t*, std::uint64_t*, int*) { MacosGuestMemoryTodo("QueryDirectMapping"); }
+std::vector<DirectMemoryView> DirectMemoryViews(int64_t, size_t) { MacosGuestMemoryTodo("DirectMemoryViews"); }
+void UnmapDirectMemoryViews(const std::vector<DirectMemoryView>&) { MacosGuestMemoryTodo("UnmapDirectMemoryViews"); }
+
+#else
+
 #if defined(__linux__)
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -1151,3 +1178,5 @@ void UnmapDirectMemoryViews(const std::vector<DirectMemoryView>& views) {
         UnmapRegistered(mutation, reinterpret_cast<void*>(view.address), view.bytes);
     }
 }
+
+#endif

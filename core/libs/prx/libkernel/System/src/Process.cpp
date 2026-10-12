@@ -5,6 +5,9 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
+#elif defined(__APPLE__)
+#include <crt_externs.h>
+#include <unistd.h>
 #else
 #include <sched.h>
 #include <unistd.h>
@@ -79,6 +82,11 @@ public:
             throw std::system_error(GetLastError(), std::system_category(), "Reading process arguments");
         for (int index = 0; index < count; ++index)
             arguments.push_back(toUtf8(values.get()[index]));
+#elif defined(__APPLE__)
+        const int count = *_NSGetArgc();
+        char** values = *_NSGetArgv();
+        if (count < 0 || values == nullptr) throw std::runtime_error("Cannot read process arguments");
+        for (int index = 0; index < count; ++index) arguments.push_back(values[index] != nullptr ? values[index] : "");
 #else
         std::ifstream stream("/proc/self/cmdline", std::ios::binary);
         if (!stream)
@@ -329,6 +337,8 @@ int APS5_VABI sceKernelGetCurrentCpu(void) {
             throw std::system_error(GetLastError(), std::system_category(), "Reading processor group size");
         index += count;
     }
+#elif defined(__APPLE__)
+    const auto index = 0u;
 #else
     const int cpu = ::sched_getcpu();
     if (cpu < 0)

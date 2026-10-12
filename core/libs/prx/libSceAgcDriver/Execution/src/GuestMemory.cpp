@@ -28,6 +28,10 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <cstdint>
+#include <mach/mach.h>
+#include <pthread.h>
 #else
 #include <cerrno>
 #include <cstdint>
@@ -548,6 +552,33 @@ bool describePages(std::uintptr_t address, std::size_t bytes, Emit&& emit) {
         const auto next = std::min(end, regionEnd);
         if (!emit(PageRun{cursor, next, readable, writable})) return true;
         cursor = next;
+#elif defined(__APPLE__)
+        const auto generation = GuestAllocations::GuestAllocationsGeneration_nid_postfix();
+        vm_address_t region = static_cast<vm_address_t>(cursor);
+        vm_size_t size = 0;
+        vm_region_basic_info_64 info{};
+        mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t object = MACH_PORT_NULL;
+        const kern_return_t result = vm_region_64(mach_task_self(), &region, &size, VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&info), &count, &object);
+        if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+        if (result != KERN_SUCCESS || size == 0) {
+            static_cast<void>(emit(PageRun{cursor, end, false, false}));
+            return true;
+        }
+        if (region > cursor) {
+            const auto gapEnd = std::min<std::uintptr_t>(end, static_cast<std::uintptr_t>(region));
+            if (!emit(PageRun{cursor, gapEnd, false, false})) return true;
+            cursor = gapEnd;
+            continue;
+        }
+        const bool readable = (info.protection & VM_PROT_READ) != 0;
+        const bool writable = readable && (info.protection & VM_PROT_WRITE) != 0;
+        const auto next = std::min<std::uintptr_t>(end, static_cast<std::uintptr_t>(region + size));
+        if (next <= cursor) return false;
+        constexpr auto mask = static_cast<std::uintptr_t>(PageBytes - 1);
+        pages.record(cursor & ~mask, (next + mask) & ~mask, readable, writable, generation);
+        if (!emit(PageRun{cursor, next, readable, writable})) return true;
+        cursor = next;
 #else
         const auto generation = GuestAllocations::GuestAllocationsGeneration_nid_postfix();
         const auto recordRun = [&](std::uintptr_t next, bool readable, bool writable) {
@@ -629,6 +660,13 @@ bool onOwnLiveStack(std::uintptr_t address, std::size_t bytes) {
             GetCurrentThreadStackLimits(&lowLimit, &highLimit);
             low = static_cast<std::uintptr_t>(lowLimit);
             high = static_cast<std::uintptr_t>(highLimit);
+#elif defined(__APPLE__)
+            const auto size = pthread_get_stacksize_np(pthread_self());
+            const auto top = reinterpret_cast<std::uintptr_t>(pthread_get_stackaddr_np(pthread_self()));
+            if (size != 0 && top >= size) {
+                high = top;
+                low = top - size;
+            }
 #else
             pthread_attr_t attributes;
             if (pthread_getattr_np(pthread_self(), &attributes) != 0) return;

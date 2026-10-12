@@ -172,7 +172,11 @@ bool NotBefore(const WriteMark& time, const WriteMark& mark) {
 using WriteMark = timespec;
 WriteMark Now() {
     timespec now;
+#ifdef CLOCK_REALTIME_COARSE
     clock_gettime(CLOCK_REALTIME_COARSE, &now);
+#else
+    clock_gettime(CLOCK_REALTIME, &now);
+#endif
     return now;
 }
 bool NotBefore(const WriteMark& time, const WriteMark& mark) {

@@ -12,6 +12,11 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <cerrno>
+#include <mach/mach.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
 #else
 #include <cerrno>
 #include <fstream>
@@ -290,6 +295,20 @@ int APS5_VABI sceKernelVirtualQuery(const void* addr, int flags, VirtualQueryInf
  info->end = info->start + host.RegionSize;
  const bool writable = (host.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_WRITECOPY)) != 0;
  const bool executable = (host.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+ #elif defined(__APPLE__)
+ vm_address_t region = static_cast<vm_address_t>(address);
+ vm_size_t size = 0;
+ vm_region_basic_info_64 host{};
+ mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+ mach_port_t object = MACH_PORT_NULL;
+ const kern_return_t result = vm_region_64(mach_task_self(), &region, &size, VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&host), &count, &object);
+ if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+ if (result != KERN_SUCCESS || size == 0 || address < region || address >= region + size) return SCE_KERNEL_ERROR_EACCES;
+ if ((host.protection & VM_PROT_READ) == 0) return SCE_KERNEL_ERROR_EACCES;
+ info->start = static_cast<uintptr_t>(region);
+ info->end = static_cast<uintptr_t>(region + size);
+ const bool writable = (host.protection & VM_PROT_WRITE) != 0;
+ const bool executable = (host.protection & VM_PROT_EXECUTE) != 0;
  #else
  std::ifstream maps("/proc/self/maps");
  std::string line;

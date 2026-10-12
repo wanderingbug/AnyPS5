@@ -153,6 +153,25 @@ int ReadDirectoryDescriptor(int fd, char* buf, int nbytes) {
 
 }
 
+#elif defined(__APPLE__)
+
+#include <climits>
+#include <fcntl.h>
+
+namespace File {
+
+std::optional<std::filesystem::path> DirectoryDescriptorPath(int fd) {
+    if (fd < 0) return std::nullopt;
+    char buffer[PATH_MAX];
+    if (::fcntl(fd, F_GETPATH, buffer) != 0) return std::nullopt;
+    std::error_code error;
+    const std::filesystem::path target(buffer);
+    if (!std::filesystem::is_directory(target, error)) return std::nullopt;
+    return target;
+}
+
+}
+
 #else
 
 namespace File {

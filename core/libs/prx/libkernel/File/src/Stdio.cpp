@@ -382,15 +382,21 @@ static int NativeFstatfs(int descriptor, KernelStatfs* fs) {
 }
 #else
 #include <sys/statvfs.h>
+#if defined(__linux__)
 #include <sys/vfs.h>
+#endif
 static int NativeFstatfs(int descriptor, KernelStatfs* fs) {
-    constexpr long PipeFilesystem = 0x50495045;
     struct stat file{};
     if (::fstat(descriptor, &file) != 0) return SceErrorFromErrno(errno) & 0xffff;
     if (S_ISSOCK(file.st_mode)) return GUEST_EINVAL;
     if (S_ISFIFO(file.st_mode)) {
+#if defined(__linux__)
+        constexpr long PipeFilesystem = 0x50495045;
         struct statfs kind{};
         if (::fstatfs(descriptor, &kind) == 0 && static_cast<long>(kind.f_type) == PipeFilesystem) return GUEST_EINVAL;
+#else
+        return GUEST_EINVAL;
+#endif
     }
     struct statvfs host{};
     if (::fstatvfs(descriptor, &host) != 0) return SceErrorFromErrno(errno) & 0xffff;
@@ -808,7 +814,7 @@ int APS5_VABI sceKernelGetdents(int fd, char* buf, int nbytes) {
     return sceKernelGetdirentries(fd, buf, nbytes, nullptr);
 }
 
-#else
+#elif defined(__linux__)
 
 int APS5_VABI sceKernelGetdirentries(int fd, char* buf, int nbytes, int64_t* basep) {
     constexpr std::size_t GuestHeaderBytes = 8;
@@ -844,6 +850,54 @@ int APS5_VABI sceKernelGetdirentries(int fd, char* buf, int nbytes, int64_t* bas
         std::memcpy(out + GuestHeaderBytes, entry->d_name, nameLength);
         written += record;
         resume = entry->d_off;
+        offset += entry->d_reclen;
+    }
+    if (::lseek(fd, resume, SEEK_SET) < 0) return SceErrorFromErrno(errno);
+    return static_cast<int>(written);
+}
+
+int APS5_VABI sceKernelGetdents(int fd, char* buf, int nbytes) {
+    return sceKernelGetdirentries(fd, buf, nbytes, nullptr);
+}
+
+#elif defined(__APPLE__)
+
+int APS5_VABI sceKernelGetdirentries(int fd, char* buf, int nbytes, int64_t* basep) {
+    constexpr std::size_t GuestHeaderBytes = 8;
+    constexpr std::size_t GuestMaxName = 255;
+    if (buf == nullptr) return SceErrorFromErrno(GUEST_EFAULT);
+    if (nbytes <= 0) return SceErrorFromErrno(GUEST_EINVAL);
+    const off_t base = ::lseek(fd, 0, SEEK_CUR);
+    if (base < 0) return SceErrorFromErrno(errno);
+    if (basep != nullptr) *basep = static_cast<int64_t>(base);
+    std::vector<char> host(static_cast<std::size_t>(nbytes) < 4096 ? 4096 : static_cast<std::size_t>(nbytes));
+    long cookie = static_cast<long>(base);
+    const auto read = ::getdirentries(fd, host.data(), static_cast<int>(host.size()), &cookie);
+    if (read < 0) return SceErrorFromErrno(errno);
+    std::size_t written = 0;
+    off_t resume = base;
+    for (long offset = 0; offset < read;) {
+        const auto* entry = reinterpret_cast<const struct dirent*>(host.data() + offset);
+        if (entry->d_reclen == 0 || offset + entry->d_reclen > read) break;
+        const auto nameLength = static_cast<std::size_t>(entry->d_namlen);
+        const auto record = (GuestHeaderBytes + nameLength + 1 + 3) & ~std::size_t{3};
+        if (nameLength > GuestMaxName || written + record > static_cast<std::size_t>(nbytes)) {
+            if (::lseek(fd, resume, SEEK_SET) < 0) return SceErrorFromErrno(errno);
+            if (written != 0) return static_cast<int>(written);
+            return nameLength > GuestMaxName ? static_cast<int>(0x80020000u | GUEST_ENAMETOOLONG) : SceErrorFromErrno(GUEST_EINVAL);
+        }
+        char* out = buf + written;
+        std::memset(out, 0, record);
+        const auto fileNumber = static_cast<std::uint32_t>(entry->d_ino);
+        const auto recordLength = static_cast<std::uint16_t>(record);
+        const auto nameBytes = static_cast<std::uint8_t>(nameLength);
+        std::memcpy(out, &fileNumber, sizeof(fileNumber));
+        std::memcpy(out + 4, &recordLength, sizeof(recordLength));
+        out[6] = static_cast<char>(entry->d_type);
+        out[7] = static_cast<char>(nameBytes);
+        std::memcpy(out + GuestHeaderBytes, entry->d_name, nameLength);
+        written += record;
+        resume = base + offset + entry->d_reclen;
         offset += entry->d_reclen;
     }
     if (::lseek(fd, resume, SEEK_SET) < 0) return SceErrorFromErrno(errno);

@@ -422,6 +422,18 @@ void GuestArenaReset_nid_postfix(void* pointer, std::size_t bytes) {
     if (!Arena::Get().Contains(pointer, bytes)) throw OutsideArena("reset", pointer, bytes);
     if (PlaceAt(pointer, bytes, 0x01) == MAP_FAILED) throw std::system_error(errno, std::generic_category(), "guest arena reset failed");
 }
+#elif defined(__APPLE__)
+void GuestArenaSetProtection_nid_postfix(std::uintptr_t, std::size_t, std::uint32_t) {
+    throw std::runtime_error("TODO: macOS GuestArena::SetProtection is not implemented");
+}
+
+void GuestArenaCommit_nid_postfix(void*, std::size_t, std::uint32_t, std::size_t) {
+    throw std::runtime_error("TODO: macOS GuestArena::Commit is not implemented");
+}
+
+void GuestArenaReset_nid_postfix(void*, std::size_t) {
+    throw std::runtime_error("TODO: macOS GuestArena::Reset is not implemented");
+}
 #endif
 
 bool GuestArenaWriteWatched_nid_postfix() {

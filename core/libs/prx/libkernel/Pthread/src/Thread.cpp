@@ -87,6 +87,12 @@ static bool HostStackLimits(std::uintptr_t* low, std::uintptr_t* high) {
     GetCurrentThreadStackLimits(&lowLimit, &highLimit);
     *low = lowLimit;
     *high = highLimit;
+#elif defined(__APPLE__)
+    const auto size = pthread_get_stacksize_np(pthread_self());
+    const auto top = reinterpret_cast<std::uintptr_t>(pthread_get_stackaddr_np(pthread_self()));
+    if (size == 0 || top < size) return false;
+    *high = top;
+    *low = top - size;
 #else
     pthread_attr_t attr;
     if (pthread_getattr_np(pthread_self(), &attr) != 0)

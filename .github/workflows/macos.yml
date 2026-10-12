@@ -1,0 +1,29 @@
+name: macOS
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - name: Install CMake and Ninja
+        run: brew install cmake ninja
+      - name: Configure the x86-64 build
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DCMAKE_OSX_ARCHITECTURES=x86_64
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Build the prx libraries
+        run: cmake --build build --target libs --parallel

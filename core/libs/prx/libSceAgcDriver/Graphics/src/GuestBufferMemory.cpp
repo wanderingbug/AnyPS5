@@ -12,12 +12,15 @@
 #include "prx/libc/include/GuestWriteWatch.hpp"
 #ifdef _WIN32
 #include <windows.h>
-#else
+#elif defined(__linux__)
 #include <fcntl.h>
 #include <linux/udmabuf.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <unistd.h>
+#elif defined(__APPLE__)
+#include <sys/mman.h>
 #include <unistd.h>
 #endif
 #include <array>
@@ -291,7 +294,7 @@ const char* createHostPointerImport(const Context& context, HostImport& entry, V
     return bindImport(context, entry, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, &import, pointer.memoryTypeBits, allocated, failure);
 }
 
-#ifndef _WIN32
+#if defined(__linux__)
 int udmabufDevice() {
     static const int device = [] {
         const int result = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
@@ -333,7 +336,7 @@ const char* createDmaBufImport(const Context& context, HostImport& entry, int fi
 }
 #endif
 
-#ifndef _WIN32
+#if defined(__linux__)
 constexpr std::uint64_t ImportChunkBytes = std::uint64_t{64} << 20u;
 
 struct ImportChunk {
@@ -480,7 +483,7 @@ const char* createChunkedDmaBufImport(const Context& context, HostImport& entry,
 
 const char* createImport(const Context& context, HostImport& entry, VkResult& failure) {
     const char* step = createHostPointerImport(context, entry, failure);
-#ifndef _WIN32
+#if defined(__linux__)
     int file = -1;
     std::uint64_t offset = 0;
     if (step != nullptr && context.dmaBufImport && GuestArena::GuestArenaSharedBacking_nid_postfix(static_cast<std::uintptr_t>(entry.base), static_cast<std::size_t>(entry.bytes), &file, &offset)) {
@@ -1906,7 +1909,7 @@ ImportProbe ProbeDmaBufImportWriteProtection(const Context& context) {
     static_cast<void>(context);
     probe.failure = "the Linux write watch";
     return probe;
-#else
+#elif defined(__linux__)
     if (!context.dmaBufImport) {
         probe.failure = "dma-buf import support";
         return probe;
@@ -1944,6 +1947,10 @@ ImportProbe ProbeDmaBufImportWriteProtection(const Context& context) {
     }, probe);
     munmap(mapped, bytes);
     close(file);
+    return probe;
+#else
+    static_cast<void>(context);
+    probe.failure = "dma-buf import";
     return probe;
 #endif
 }

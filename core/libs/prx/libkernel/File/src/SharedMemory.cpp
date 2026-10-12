@@ -208,6 +208,24 @@ int CreateAnonymousFile() {
     }
     errno = EEXIST;
     return -1;
+#elif defined(__APPLE__)
+    char path[] = "/tmp/anyps5-shm-XXXXXX";
+    const int descriptor = ::mkstemp(path);
+    if (descriptor < 0) return -1;
+    if (::unlink(path) != 0) {
+        const int error = errno;
+        ::close(descriptor);
+        errno = error;
+        return -1;
+    }
+    const int flags = ::fcntl(descriptor, F_GETFD);
+    if (flags < 0 || ::fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC) != 0) {
+        const int error = errno;
+        ::close(descriptor);
+        errno = error;
+        return -1;
+    }
+    return descriptor;
 #else
     const int descriptor = memfd_create("anyps5 shm_open", MFD_CLOEXEC);
     return descriptor;
@@ -484,12 +502,14 @@ extern "C" int APS5_VABI shm_unlink_nid_postfix(const char* path) {
         if (const int guest = NamedGuestError(errno)) return Fail(guest);
         throw std::runtime_error("shm_unlink: locking the host shared-memory namespace failed, errno=" + std::to_string(errno));
     }
+#ifndef __APPLE__
     const auto objectPath = "/dev/shm" + hostName;
     if (::faccessat(AT_FDCWD, objectPath.c_str(), R_OK | W_OK, AT_EACCESS) != 0) {
         const int error = errno;
         if (const int guest = NamedGuestError(error)) return Fail(guest);
         throw std::runtime_error("shm_unlink: checking shared-memory permissions failed, errno=" + std::to_string(error));
     }
+#endif
     if (::shm_unlink(hostName.c_str()) == 0) return 0;
     const int error = errno;
     if (const int guest = NamedGuestError(error)) return Fail(guest);

@@ -20,12 +20,17 @@
 #include <windows.h>
 #include <psapi.h>
 #include <filesystem>
-#else
+#elif defined(__linux__)
 #include <dlfcn.h>
 #include <link.h>
 #include <mutex>
 #include <unistd.h>
 #include <unordered_map>
+#elif defined(__APPLE__)
+#include <dlfcn.h>
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <mach/vm_prot.h>
 #endif
 
 extern "C" std::int32_t ModuleIdForImage_nid_no_patch(const void* native);
@@ -71,7 +76,7 @@ std::uint64_t PageSpan(std::uint64_t address, std::uint64_t size) {
     return ((address + size + pageMask) & ~pageMask) - (address & ~pageMask);
 }
 
-#ifndef _WIN32
+#if defined(__linux__)
 template<typename TInfo>
 struct ImageSearch {
     std::uintptr_t address;
@@ -203,6 +208,106 @@ int AddGuestSegmentBytes(dl_phdr_info* image, std::size_t, void* data) {
 std::uint64_t GuestSegmentBytes() {
     std::uint64_t bytes = 0;
     dl_iterate_phdr(AddGuestSegmentBytes, &bytes);
+    return bytes;
+}
+#elif defined(__APPLE__)
+bool SegmentContains(const segment_command_64& segment, std::intptr_t slide, std::uintptr_t begin, std::uint64_t size) {
+    if (segment.vmsize == 0 || std::strcmp(segment.segname, "__PAGEZERO") == 0) return false;
+    const auto start = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(segment.vmaddr) + slide);
+    return begin >= start && begin - start < segment.vmsize && size <= segment.vmsize - (begin - start);
+}
+
+void ForEachSegment(const mach_header_64* header, const auto& visit) {
+    auto* command = reinterpret_cast<const load_command*>(reinterpret_cast<const std::uint8_t*>(header) + sizeof(mach_header_64));
+    for (std::uint32_t index = 0; index < header->ncmds; ++index) {
+        if (command->cmd == LC_SEGMENT_64) visit(*reinterpret_cast<const segment_command_64*>(command));
+        if (command->cmdsize < sizeof(load_command)) break;
+        command = reinterpret_cast<const load_command*>(reinterpret_cast<const std::uint8_t*>(command) + command->cmdsize);
+    }
+}
+
+bool ImageForHeader(const mach_header_64* header, std::intptr_t& slide, const char*& name) {
+    const auto count = _dyld_image_count();
+    for (std::uint32_t index = 0; index < count; ++index) {
+        if (_dyld_get_image_header(index) != reinterpret_cast<const mach_header*>(header)) continue;
+        slide = _dyld_get_image_vmaddr_slide(index);
+        name = _dyld_get_image_name(index);
+        return true;
+    }
+    return false;
+}
+
+const char* ImageFileName(const char* path) {
+    if (path == nullptr || path[0] == '\0') return "";
+    const char* slash = std::strrchr(path, '/');
+    return slash != nullptr ? slash + 1 : path;
+}
+
+template<typename TInfo>
+bool Fill(const mach_header_64* header, std::intptr_t slide, const char* path, TInfo& info) {
+    SetName(info, ModuleName(ImageFileName(path)));
+    ForEachSegment(header, [&](const segment_command_64& segment) {
+        if (std::strcmp(segment.segname, "__PAGEZERO") == 0 || segment.vmsize == 0 || info.segment_count >= std::size(info.segments)) return;
+        auto& out = info.segments[info.segment_count++];
+        out.address = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(segment.vmaddr) + slide);
+        out.size = ToU32(segment.vmsize, "segment size");
+        const auto prot = segment.initprot;
+        out.prot = ((prot & VM_PROT_READ) ? ProtRead : 0) | ((prot & VM_PROT_WRITE) ? ProtWrite : 0) | ((prot & VM_PROT_EXECUTE) ? ProtExecute : 0);
+    });
+    if constexpr (Extended<TInfo>) {
+        info.id = ModuleIdForImage_nid_no_patch(header);
+        info.ref_count = 1;
+    }
+    return info.segment_count != 0;
+}
+
+bool FindHeader(std::uintptr_t address, const mach_header_64*& header, std::intptr_t& slide, const char*& name) {
+    const auto count = _dyld_image_count();
+    for (std::uint32_t index = 0; index < count; ++index) {
+        const auto* candidate = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(index));
+        if (candidate == nullptr || candidate->magic != MH_MAGIC_64) continue;
+        const auto imageSlide = _dyld_get_image_vmaddr_slide(index);
+        bool contains = false;
+        ForEachSegment(candidate, [&](const segment_command_64& segment) {
+            contains = contains || SegmentContains(segment, imageSlide, address, 1);
+        });
+        if (!contains) continue;
+        header = candidate;
+        slide = imageSlide;
+        name = _dyld_get_image_name(index);
+        return true;
+    }
+    return false;
+}
+
+std::vector<GuestImage> GuestImages() {
+    std::vector<GuestImage> images;
+    const auto count = _dyld_image_count();
+    for (std::uint32_t index = 0; index < count; ++index) {
+        const auto* header = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(index));
+        if (header == nullptr || header->magic != MH_MAGIC_64) continue;
+        const char* path = _dyld_get_image_name(index);
+        const std::string_view name = path != nullptr ? path : "";
+        if (header->filetype != MH_EXECUTE && !name.ends_with(".prx")) continue;
+        images.push_back({header, reinterpret_cast<std::uintptr_t>(header)});
+    }
+    return images;
+}
+
+std::uint64_t GuestSegmentBytes() {
+    std::uint64_t bytes = 0;
+    for (const auto& image : GuestImages()) {
+        const auto* header = static_cast<const mach_header_64*>(image.native);
+        const char* path = nullptr;
+        std::intptr_t slide = 0;
+        if (!ImageForHeader(header, slide, path)) continue;
+        const std::string_view name = path != nullptr ? path : "";
+        if (header->filetype != MH_EXECUTE && !name.ends_with(GuestModuleSuffix)) continue;
+        ForEachSegment(header, [&](const segment_command_64& segment) {
+            if (std::strcmp(segment.segname, "__PAGEZERO") == 0 || segment.vmsize == 0) return;
+            bytes += PageSpan(static_cast<std::uint64_t>(segment.vmaddr), segment.vmsize);
+        });
+    }
     return bytes;
 }
 #else
@@ -354,6 +459,11 @@ int APS5_VABI sceKernelGetModuleInfoFromAddr(std::uint64_t address, int flags, M
     result.st_size = sizeof(ModuleInfoEx);
 #ifdef _WIN32
     if (!Fill(static_cast<std::uintptr_t>(address), result)) return SCE_KERNEL_ERROR_ESRCH;
+#elif defined(__APPLE__)
+    const mach_header_64* header = nullptr;
+    std::intptr_t slide = 0;
+    const char* name = nullptr;
+    if (!FindHeader(static_cast<std::uintptr_t>(address), header, slide, name) || !Fill(header, slide, name, result)) return SCE_KERNEL_ERROR_ESRCH;
 #else
     Dl_info symbol{};
     link_map* native = nullptr;
@@ -386,6 +496,10 @@ int APS5_VABI sceKernelGetModuleInfo(KernelModule handle, ModuleInfo* info) {
         result.st_size = sizeof(ModuleInfo);
 #ifdef _WIN32
         if (!Fill(image.address, result)) return SCE_KERNEL_ERROR_ESRCH;
+#elif defined(__APPLE__)
+        std::intptr_t slide = 0;
+        const char* name = nullptr;
+        if (!ImageForHeader(static_cast<const mach_header_64*>(image.native), slide, name) || !Fill(static_cast<const mach_header_64*>(image.native), slide, name, result)) return SCE_KERNEL_ERROR_ESRCH;
 #else
         ImageSearch<ModuleInfo> search{image.address, &result, false};
         dl_iterate_phdr(FindImage<ModuleInfo>, &search);

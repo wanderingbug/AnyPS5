@@ -16,6 +16,10 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <dlfcn.h>
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
 #else
 #include <dlfcn.h>
 #include <link.h>
@@ -56,6 +60,14 @@ void* Symbol(Module& module, const char* name) {
 #ifndef _WIN32
 std::uintptr_t MainProgramBase() {
     static const std::uintptr_t base = [] {
+#if defined(__APPLE__)
+        const auto count = _dyld_image_count();
+        for (std::uint32_t index = 0; index < count; ++index) {
+            const auto* header = _dyld_get_image_header(index);
+            if (header != nullptr && header->filetype == MH_EXECUTE) return reinterpret_cast<std::uintptr_t>(header);
+        }
+        return std::uintptr_t{0};
+#else
         struct Scan {
             std::uintptr_t value = 0;
         };
@@ -68,6 +80,7 @@ std::uintptr_t MainProgramBase() {
             },
             &scan);
         return scan.value;
+#endif
     }();
     return base;
 }
