@@ -27,6 +27,9 @@
 #include <pthread.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 #endif
 
 static constexpr int SCE_OK = 0;
@@ -219,7 +222,7 @@ PthreadPrivate::~PthreadPrivate() {
 }
 
 static void BindHostCpuClock(PthreadPrivate* self) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__APPLE__)
     (void)self;
 #else
     clockid_t clock{};
@@ -282,6 +285,20 @@ bool GuestThreadCpuNanos(int cpuClockThread, std::uint64_t* nanos) {
         return (static_cast<std::uint64_t>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
     };
     *nanos = (toTicks(user) + toTicks(kernel)) * 100ULL;
+#elif defined(__APPLE__)
+    if (thread->hostThread == nullptr) {
+        *nanos = 0;
+        return true;
+    }
+    thread_basic_info info{};
+    mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+    const kern_return_t result = thread_info(pthread_mach_thread_np(thread->hostThread), THREAD_BASIC_INFO, reinterpret_cast<thread_info_t>(&info), &count);
+    if (result != KERN_SUCCESS)
+        throw std::system_error(result, std::generic_category(), "Querying guest thread CPU time");
+    const auto ticks = [](time_value_t time) {
+        return static_cast<std::uint64_t>(time.seconds) * 1000000000ULL + static_cast<std::uint64_t>(time.microseconds) * 1000ULL;
+    };
+    *nanos = ticks(info.user_time) + ticks(info.system_time);
 #else
     if (!thread->hostCpuClockBound) {
         *nanos = 0;
