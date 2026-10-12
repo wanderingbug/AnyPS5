@@ -34,6 +34,16 @@ public:
         return next;
     }
 
+    bool compare_exchange_strong(std::shared_ptr<T>& expected, std::shared_ptr<T> desired, std::memory_order = std::memory_order_seq_cst, std::memory_order = std::memory_order_seq_cst) {
+        std::lock_guard lock(mutex);
+        if (value == expected) {
+            value = std::move(desired);
+            return true;
+        }
+        expected = value;
+        return false;
+    }
+
 private:
     mutable std::mutex mutex;
     std::shared_ptr<T> value;
