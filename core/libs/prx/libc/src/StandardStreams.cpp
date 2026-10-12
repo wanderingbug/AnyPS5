@@ -39,7 +39,7 @@ int APS5_VABI getc_unlocked_nid_postfix(FileStream* stream) {
 #ifdef _WIN32
     const int result = _fgetc_nolock(GetNativeStream(stream));
 #else
-    const int result = ::getc_unlocked(GetNativeStream(stream));
+    const int result = getc_unlocked(GetNativeStream(stream));
 #endif
     stream->SyncUnlockedStatus();
     return result;
@@ -56,7 +56,7 @@ int APS5_VABI putc_unlocked_nid_postfix(int value, FileStream* stream) {
 #ifdef _WIN32
     const int result = _fputc_nolock(value, GetNativeStream(stream));
 #else
-    const int result = ::putc_unlocked(value, GetNativeStream(stream));
+    const int result = putc_unlocked(value, GetNativeStream(stream));
 #endif
     stream->SyncUnlockedStatus();
     return result;
@@ -93,7 +93,7 @@ int APS5_VABI fileno_nid_postfix(FileStream* stream) {
 #ifdef _WIN32
     const int descriptor = _fileno(GetNativeStream(stream));
 #else
-    const int descriptor = ::fileno(GetNativeStream(stream));
+    const int descriptor = fileno(GetNativeStream(stream));
 #endif
     stream->GuestState().descriptor = static_cast<std::int16_t>(descriptor);
     return descriptor;
