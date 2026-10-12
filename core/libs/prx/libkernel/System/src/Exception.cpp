@@ -19,6 +19,11 @@
 #include <cstdlib>
 #include <system_error>
 #include <pthread.h>
+#ifdef __APPLE__
+#ifndef _XOPEN_SOURCE
+#define _XOPEN_SOURCE 700
+#endif
+#endif
 #include <ucontext.h>
 #include <unistd.h>
 #endif
@@ -304,8 +309,65 @@ bool RaiseOn(Pthread thread, GuestExceptionHandler handler, int signum) {
 }
 #else
 constexpr int HostSignal = SIGUSR1;
+#if !defined(__APPLE__)
 constexpr std::size_t FxsaveRegisterBytes = 416;
+#endif
 
+#if defined(__APPLE__)
+void FromHost(const mcontext_t& host, GuestMcontext& m) {
+    if (host == nullptr) throw std::runtime_error("sceKernelRaiseException: host mcontext is null");
+    const auto& thread = host->__ss;
+    const auto& fault = host->__es;
+    m.rdi = thread.__rdi;
+    m.rsi = thread.__rsi;
+    m.rdx = thread.__rdx;
+    m.rcx = thread.__rcx;
+    m.r8 = thread.__r8;
+    m.r9 = thread.__r9;
+    m.rax = thread.__rax;
+    m.rbx = thread.__rbx;
+    m.rbp = thread.__rbp;
+    m.r10 = thread.__r10;
+    m.r11 = thread.__r11;
+    m.r12 = thread.__r12;
+    m.r13 = thread.__r13;
+    m.r14 = thread.__r14;
+    m.r15 = thread.__r15;
+    m.rip = thread.__rip;
+    m.rsp = thread.__rsp;
+    m.rflags = thread.__rflags;
+    m.cs = thread.__cs;
+    m.fs = static_cast<std::uint16_t>(thread.__fs);
+    m.gs = static_cast<std::uint16_t>(thread.__gs);
+    m.trapno = fault.__trapno;
+    m.err = fault.__err;
+    m.addr = fault.__faultvaddr;
+    m.len = sizeof(GuestMcontext);
+}
+
+void ToHost(const GuestMcontext& m, mcontext_t& host) {
+    if (host == nullptr) throw std::runtime_error("sceKernelRaiseException: host mcontext is null");
+    auto& thread = host->__ss;
+    thread.__rdi = m.rdi;
+    thread.__rsi = m.rsi;
+    thread.__rdx = m.rdx;
+    thread.__rcx = m.rcx;
+    thread.__r8 = m.r8;
+    thread.__r9 = m.r9;
+    thread.__rax = m.rax;
+    thread.__rbx = m.rbx;
+    thread.__rbp = m.rbp;
+    thread.__r10 = m.r10;
+    thread.__r11 = m.r11;
+    thread.__r12 = m.r12;
+    thread.__r13 = m.r13;
+    thread.__r14 = m.r14;
+    thread.__r15 = m.r15;
+    thread.__rip = m.rip;
+    thread.__rsp = m.rsp;
+    thread.__rflags = m.rflags;
+}
+#else
 void FromHost(const mcontext_t& host, GuestMcontext& m) {
     const auto* g = host.gregs;
     m.rdi = g[REG_RDI];
@@ -355,6 +417,7 @@ void ToHost(const GuestMcontext& m, mcontext_t& host) {
     g[REG_EFL] = static_cast<greg_t>(m.rflags);
     if (host.fpregs != nullptr) std::memcpy(host.fpregs, m.fpstate, FxsaveRegisterBytes);
 }
+#endif
 
 void Deliver(int, siginfo_t*, void* context) {
     const auto handler = Handler(RaisedSignal);

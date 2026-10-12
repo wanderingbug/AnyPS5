@@ -7,6 +7,8 @@
 #include <tlhelp32.h>
 #elif defined(__APPLE__)
 #include <crt_externs.h>
+#include <mach/mach.h>
+#include <pthread.h>
 #include <unistd.h>
 #else
 #include <sched.h>
@@ -447,7 +449,24 @@ int APS5_VABI getrusage_nid_postfix(int who, GuestResourceUsage* usage) {
     usage->ru_nivcsw = 0;
 #else
     struct rusage native{};
+#if defined(__APPLE__)
+    if (who != 0) {
+        *usage = {};
+        thread_basic_info info{};
+        mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+        const kern_return_t result = thread_info(pthread_mach_thread_np(pthread_self()), THREAD_BASIC_INFO, reinterpret_cast<thread_info_t>(&info), &count);
+        if (result != KERN_SUCCESS)
+            throw std::system_error(result, std::generic_category(), "getrusage: thread_info failed");
+        usage->ru_utime.tv_sec = info.user_time.seconds;
+        usage->ru_utime.tv_usec = info.user_time.microseconds;
+        usage->ru_stime.tv_sec = info.system_time.seconds;
+        usage->ru_stime.tv_usec = info.system_time.microseconds;
+        return 0;
+    }
+    if (::getrusage(RUSAGE_SELF, &native) != 0)
+#else
     if (::getrusage(who == 0 ? RUSAGE_SELF : RUSAGE_THREAD, &native) != 0)
+#endif
         throw std::system_error(errno, std::generic_category(), "getrusage: getrusage failed");
     usage->ru_utime.tv_sec = static_cast<std::int64_t>(native.ru_utime.tv_sec);
     usage->ru_utime.tv_usec = static_cast<std::int64_t>(native.ru_utime.tv_usec);
