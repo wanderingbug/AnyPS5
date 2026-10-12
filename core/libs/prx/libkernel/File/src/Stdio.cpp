@@ -384,6 +384,8 @@ static int NativeFstatfs(int descriptor, KernelStatfs* fs) {
 #include <sys/statvfs.h>
 #if defined(__linux__)
 #include <sys/vfs.h>
+#elif defined(__APPLE__)
+#include <sys/mount.h>
 #endif
 static int NativeFstatfs(int descriptor, KernelStatfs* fs) {
     struct stat file{};
@@ -402,7 +404,11 @@ static int NativeFstatfs(int descriptor, KernelStatfs* fs) {
     if (::fstatvfs(descriptor, &host) != 0) return SceErrorFromErrno(errno) & 0xffff;
     if (host.f_flag & ST_RDONLY) fs->f_flags |= KERNEL_MNT_RDONLY;
     if (host.f_flag & ST_NOSUID) fs->f_flags |= KERNEL_MNT_NOSUID;
+#if defined(__APPLE__)
+    if (host.f_flag & MNT_NOEXEC) fs->f_flags |= KERNEL_MNT_NOEXEC;
+#else
     if (host.f_flag & ST_NOEXEC) fs->f_flags |= KERNEL_MNT_NOEXEC;
+#endif
     fs->f_bsize = host.f_frsize != 0 ? host.f_frsize : host.f_bsize;
     fs->f_iosize = host.f_bsize;
     fs->f_blocks = host.f_blocks;
@@ -786,6 +792,8 @@ int APS5_VABI sceKernelFdatasync(int fd) {
     if (fd >= GuestSockets::FirstDescriptor) return SceErrorFromErrno(GuestSockets::IsOpen(fd) ? GUEST_EINVAL : GUEST_EBADF);
 #ifdef _WIN32
     if (NativeSync(fd) != 0) return SceErrorFromErrno(errno);
+#elif defined(__APPLE__)
+    if (::fsync(fd) != 0) return SceErrorFromErrno(errno);
 #else
     if (::fdatasync(fd) != 0) return SceErrorFromErrno(errno);
 #endif
