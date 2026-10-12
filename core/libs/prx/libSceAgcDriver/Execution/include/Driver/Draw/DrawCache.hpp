@@ -1,6 +1,7 @@
 #ifndef CORE_LIBS_PRX_LIBSCEAGCDRIVER_EXECUTION_INCLUDE_DRIVER_DRAWCACHE_HPP
 #define CORE_LIBS_PRX_LIBSCEAGCDRIVER_EXECUTION_INCLUDE_DRIVER_DRAWCACHE_HPP
 
+#include "prx/libSceAgcDriver/Execution/include/AtomicSharedPtr.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Dispatch/DispatchCache.hpp"
 #include "prx/libSceAgcDriver/Execution/include/VulkanDevice.hpp"
 #include <array>
@@ -57,7 +58,7 @@ struct DrawEntry {
 
     std::vector<std::vector<std::shared_ptr<DispatchVariant>>> stages;
 
-    std::atomic<std::shared_ptr<const std::vector<DrawRecipeRecord>>> recipes;
+    AtomicSharedPtr<const std::vector<DrawRecipeRecord>> recipes;
     std::uint64_t touched = 0;
     std::list<std::uint64_t>::iterator order;
 };
