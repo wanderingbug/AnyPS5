@@ -304,7 +304,11 @@ private:
                 rest = {};
             }
         }
-        if (node->Entry) throw std::runtime_error("duplicate patched export name: " + entry.Name);
+        if (node->Entry) {
+            const auto& current = *node->Entry;
+            if (current.Address == entry.Address && current.Flags == entry.Flags && current.Other == entry.Other && current.ImportName == entry.ImportName) return;
+            throw std::runtime_error("duplicate patched export name: " + entry.Name);
+        }
         node->Entry = entry;
     }
 
