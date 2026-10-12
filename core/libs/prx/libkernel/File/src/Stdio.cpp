@@ -879,8 +879,8 @@ int APS5_VABI sceKernelGetdirentries(int fd, char* buf, int nbytes, int64_t* bas
     if (base < 0) return SceErrorFromErrno(errno);
     if (basep != nullptr) *basep = static_cast<int64_t>(base);
     std::vector<char> host(static_cast<std::size_t>(nbytes) < 4096 ? 4096 : static_cast<std::size_t>(nbytes));
-    long cookie = static_cast<long>(base);
-    const auto read = ::getdirentries(fd, host.data(), static_cast<int>(host.size()), &cookie);
+    off_t cookie = base;
+    const auto read = ::syscall(SYS_getdirentries64, fd, host.data(), static_cast<int>(host.size()), &cookie);
     if (read < 0) return SceErrorFromErrno(errno);
     std::size_t written = 0;
     off_t resume = base;
