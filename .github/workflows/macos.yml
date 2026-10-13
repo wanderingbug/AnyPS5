@@ -37,3 +37,18 @@ jobs:
       - name: Show the guest smoke log
         if: always()
         run: cat guest-smoke.log
+      - name: Present the square homebrew through MoltenVK
+        timeout-minutes: 15
+        run: tools/macos_moltenvk_smoke.sh build > moltenvk-square.log 2>&1 && echo OK || { echo FAILED; tail -80 moltenvk-square.log; exit 1; }
+      - name: Show the MoltenVK square log
+        if: always()
+        run: cat moltenvk-square.log
+      - name: Upload the square frame
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: moltenvk-square-frame
+          path: |
+            moltenvk-square.log
+            build/macos-square/frame_000.bmp
+          if-no-files-found: ignore

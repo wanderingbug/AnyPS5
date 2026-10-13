@@ -81,7 +81,18 @@ Vulkan is loaded at run time and is not required to compile. To run a title, ins
 arch -x86_64 /usr/local/bin/brew install molten-vk vulkan-loader
 ```
 
-The LunarG macOS Vulkan SDK is the other source of `libvulkan.dylib` and MoltenVK. The driver opens `libvulkan.dylib`, then `libMoltenVK.dylib`.
+The LunarG macOS Vulkan SDK is the other source of `libvulkan.dylib` and MoltenVK. The driver opens `libvulkan.dylib`, then `libMoltenVK.dylib`. An x86-64 Homebrew is a second installation under `/usr/local`, separate from the arm64 Homebrew at `/opt/homebrew`. Install it when `/usr/local/bin/brew` is missing, then install the loader and MoltenVK:
+
+```sh
+arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" > homebrew-x64.log 2>&1 && echo OK || { echo FAILED; tail -40 homebrew-x64.log; }
+arch -x86_64 /usr/local/bin/brew install molten-vk vulkan-loader > moltenvk-brew.log 2>&1 && echo OK || { echo FAILED; tail -40 moltenvk-brew.log; }
+```
+
+`tools/macos_moltenvk_smoke.sh` relinks the repository's square guest and presents two frames through SDL and MoltenVK. The guest is [square.c](../../core/relinker/relinker/tests/macos/square.c), an original 320×180 linear BGRA program in this repository: it opens video out, polls the pad, and writes a square wave to audio out. The script uses `libMoltenVK.dylib` from `MOLTENVK_LIB`, otherwise `/usr/local/lib/libMoltenVK.dylib` (and `libvulkan.dylib` beside it), otherwise the universal dylib from the MoltenVK 1.4.2 macOS package. The dylib must contain an x86-64 slice. `APS5_DUMP_FRAMES=1` and `APS5_DUMP_SCALE=1` save `frame_000.bmp`, and the script checks the background and the green square in that file.
+
+```sh
+tools/macos_moltenvk_smoke.sh build > moltenvk-square.log 2>&1 && echo OK || { echo FAILED; tail -80 moltenvk-square.log; }
+```
 
 `APS5_THREAD_PRIORITY=high` sets `QOS_CLASS_USER_INITIATED` on the calling thread, and `rt` sets `QOS_CLASS_USER_INTERACTIVE`. There is no rtkit. CPU pinning is a no-op.
 

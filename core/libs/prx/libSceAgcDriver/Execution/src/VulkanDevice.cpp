@@ -62,6 +62,35 @@
 #include <vector>
 #include <utility>
 
+#ifndef VK_KHR_portability_enumeration
+#define VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME "VK_KHR_portability_enumeration"
+#define VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR static_cast<VkInstanceCreateFlags>(0x00000001)
+#endif
+
+#ifndef VK_KHR_portability_subset
+#define VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME "VK_KHR_portability_subset"
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR static_cast<VkStructureType>(1000163000)
+typedef struct VkPhysicalDevicePortabilitySubsetFeaturesKHR {
+    VkStructureType sType;
+    void* pNext;
+    VkBool32 constantAlphaColorBlendFactors;
+    VkBool32 events;
+    VkBool32 imageViewFormatReinterpretation;
+    VkBool32 imageViewFormatSwizzle;
+    VkBool32 imageView2DOn3DImage;
+    VkBool32 multisampleArrayImage;
+    VkBool32 mutableComparisonSamplers;
+    VkBool32 pointPolygons;
+    VkBool32 samplerMipLodBias;
+    VkBool32 separateStencilMaskRef;
+    VkBool32 shaderSampleRateInterpolationFunctions;
+    VkBool32 tessellationIsolines;
+    VkBool32 tessellationPointMode;
+    VkBool32 triangleFans;
+    VkBool32 vertexAttributeAccessBeyondStride;
+} VkPhysicalDevicePortabilitySubsetFeaturesKHR;
+#endif
+
 namespace AgcDriver {
 namespace {
 
@@ -73,6 +102,17 @@ void check(VkResult result, const char* operation) {
 
 void require(bool condition, const char* reason) {
     if (!condition) throw std::runtime_error(std::string("Vulkan presentation: ") + reason);
+}
+
+VkCompositeAlphaFlagBitsKHR supportedCompositeAlpha(VkCompositeAlphaFlagsKHR supported) {
+    constexpr VkCompositeAlphaFlagBitsKHR order[] = {
+        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+        VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+        VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+    };
+    for (const auto bit : order) if ((supported & bit) != 0) return bit;
+    throw std::runtime_error("Vulkan presentation: surface does not support a composite alpha mode");
 }
 
 bool CoreVulkanCapability(std::uint32_t capability) {
@@ -299,6 +339,9 @@ struct VulkanDevice::State {
     bool depthRangeUnrestricted = false;
     bool samplerAnisotropy = false;
     bool textureCompressionBC = false;
+    bool triangleFans = true;
+    bool samplerMipLodBias = true;
+    VkCompositeAlphaFlagBitsKHR compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     bool samplerFilterMinmax = false;
     bool nonSeamlessCubeMap = false;
     bool fragmentShaderPixelInterlock = false;
@@ -913,17 +956,27 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
         APS5_LOG_OUT("Presentation window context=%p extent=%ux%u extensions=%zu", window->context, window->width, window->height, window->extensions.size());
         require(window->context && window->createSurface && window->getDrawableSize && window->width && window->height, "invalid window descriptor");
         instanceExtensions.assign(window->extensions.begin(), window->extensions.end());
-        std::uint32_t availableCount = 0;
-        const auto enumerateExtensions = state->InstanceFunction<PFN_vkEnumerateInstanceExtensionProperties>("vkEnumerateInstanceExtensionProperties");
-        check(enumerateExtensions(nullptr, &availableCount, nullptr), "vkEnumerateInstanceExtensionProperties");
-        std::vector<VkExtensionProperties> available(availableCount);
-        check(enumerateExtensions(nullptr, &availableCount, available.data()), "vkEnumerateInstanceExtensionProperties");
+    }
+    std::uint32_t availableCount = 0;
+    const auto enumerateExtensions = state->InstanceFunction<PFN_vkEnumerateInstanceExtensionProperties>("vkEnumerateInstanceExtensionProperties");
+    check(enumerateExtensions(nullptr, &availableCount, nullptr), "vkEnumerateInstanceExtensionProperties");
+    std::vector<VkExtensionProperties> available(availableCount);
+    check(enumerateExtensions(nullptr, &availableCount, available.data()), "vkEnumerateInstanceExtensionProperties");
+    const auto instanceExtension = [&](const char* name) { return std::any_of(available.begin(), available.end(), [&](const auto& item) { return std::strcmp(item.extensionName, name) == 0; }); };
+    if (window != nullptr) {
         for (const auto* name : instanceExtensions) {
             require(name != nullptr, "null instance extension");
-            if (std::none_of(available.begin(), available.end(), [&](const auto& item) { return std::strcmp(item.extensionName, name) == 0; })) {
-                throw std::runtime_error(std::string("Vulkan presentation: required instance extension missing: ") + name);
-            }
+            if (!instanceExtension(name)) throw std::runtime_error(std::string("Vulkan presentation: required instance extension missing: ") + name);
         }
+    }
+    if (instanceExtension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
+        if (std::none_of(instanceExtensions.begin(), instanceExtensions.end(), [](const char* name) { return std::strcmp(name, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0; })) {
+            instanceExtensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+        }
+        create.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+        APS5_LOG_OUT("Vulkan instance enumerates portability devices");
+    }
+    if (!instanceExtensions.empty()) {
         create.enabledExtensionCount = static_cast<std::uint32_t>(instanceExtensions.size());
         create.ppEnabledExtensionNames = instanceExtensions.data();
     }
@@ -1582,6 +1635,22 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
         deviceInfo.enabledExtensionCount = static_cast<std::uint32_t>(deviceExtensions.size());
         deviceInfo.ppEnabledExtensionNames = deviceExtensions.data();
     }
+    VkPhysicalDevicePortabilitySubsetFeaturesKHR portabilityFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR};
+    if (hasExtension(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME)) {
+        VkPhysicalDevicePortabilitySubsetFeaturesKHR queried{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR};
+        VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &queried};
+        state->InstanceFunction<PFN_vkGetPhysicalDeviceFeatures2>("vkGetPhysicalDeviceFeatures2")(selected, &features);
+        portabilityFeatures = queried;
+        portabilityFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR;
+        portabilityFeatures.pNext = bdaFeatures.pNext;
+        bdaFeatures.pNext = &portabilityFeatures;
+        state->triangleFans = queried.triangleFans == VK_TRUE;
+        state->samplerMipLodBias = queried.samplerMipLodBias == VK_TRUE;
+        deviceExtensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
+        deviceInfo.enabledExtensionCount = static_cast<std::uint32_t>(deviceExtensions.size());
+        deviceInfo.ppEnabledExtensionNames = deviceExtensions.data();
+        APS5_LOG_OUT("Portability subset triangleFans=%u mipLodBias=%u imageViewSwizzle=%u events=%u separateStencil=%u", static_cast<unsigned>(queried.triangleFans), static_cast<unsigned>(queried.samplerMipLodBias), static_cast<unsigned>(queried.imageViewFormatSwizzle), static_cast<unsigned>(queried.events), static_cast<unsigned>(queried.separateStencilMaskRef));
+    }
     deviceInfo.pNext = &bdaFeatures;
     auto shaderProfile = std::make_unique<const ShaderDeviceProfile>(buildTarget(), deviceInfo, state->properties.limits);
     check(state->InstanceFunction<PFN_vkCreateDevice>("vkCreateDevice")(selected, &deviceInfo, nullptr, &state->device), "vkCreateDevice");
@@ -1636,7 +1705,7 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
         }
         require(drawableWidth >= surface.minImageExtent.width && drawableWidth <= surface.maxImageExtent.width && drawableHeight >= surface.minImageExtent.height && drawableHeight <= surface.maxImageExtent.height, "unsupported output extent");
         require((surface.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0, "surface does not support transfer destination images");
-        require((surface.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) != 0, "opaque composition is unavailable");
+        state->compositeAlpha = supportedCompositeAlpha(surface.supportedCompositeAlpha);
         require((surface.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) != 0, "identity surface transform is unavailable");
         std::uint32_t formatCount = 0;
         auto getFormats = state->InstanceFunction<PFN_vkGetPhysicalDeviceSurfaceFormatsKHR>("vkGetPhysicalDeviceSurfaceFormatsKHR");
@@ -1661,7 +1730,7 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
         swapchain.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         swapchain.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
         swapchain.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
-        swapchain.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        swapchain.compositeAlpha = state->compositeAlpha;
         swapchain.presentMode = state->presentMode;
         swapchain.clipped = VK_FALSE;
         check(state->DeviceFunction<PFN_vkCreateSwapchainKHR>("vkCreateSwapchainKHR")(state->device, &swapchain, nullptr, &state->swapchain), "vkCreateSwapchainKHR");
@@ -2329,7 +2398,8 @@ void VulkanDevice::Resize(std::uint32_t width, std::uint32_t height) {
     }
     WaitIdle();
     require(width >= surface.minImageExtent.width && width <= surface.maxImageExtent.width && height >= surface.minImageExtent.height && height <= surface.maxImageExtent.height, "unsupported resized output extent");
-    require((surface.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0 && (surface.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) != 0 && (surface.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) != 0, "resized surface capabilities are unsupported");
+    if ((surface.supportedCompositeAlpha & state->compositeAlpha) == 0) state->compositeAlpha = supportedCompositeAlpha(surface.supportedCompositeAlpha);
+    require((surface.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0 && (surface.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) != 0, "resized surface capabilities are unsupported");
     VkSwapchainCreateInfoKHR create{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     create.surface = state->surface;
     create.minImageCount = surface.minImageCount;
@@ -2340,7 +2410,7 @@ void VulkanDevice::Resize(std::uint32_t width, std::uint32_t height) {
     create.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     create.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     create.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
-    create.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    create.compositeAlpha = state->compositeAlpha;
     create.presentMode = state->presentMode;
     create.oldSwapchain = state->swapchain;
     state->retiredSwapchains.reserve(state->retiredSwapchains.size() + 1);
@@ -2530,7 +2600,20 @@ bool VulkanDevice::PresentDisplayBuffer(const DisplayBuffer& buffer) {
     else Graphics::StorageTexture::FlushDumpSelected("flip");
     if (buffer.tilingMode == 1) {
         const auto pixels = ReadDisplayBuffer(buffer);
-        return present(buffer.width, buffer.height, true, pixels);
+        auto& dumps = Dumps();
+        bool dumpFrame = false;
+        if (dumps.dumped < dumps.limit && ++dumps.presents % static_cast<std::uint64_t>(dumps.every) == 0) {
+            if (dumps.cpu) WriteFrameBmp(dumps.dumped++, buffer.width, buffer.height, pixels, DumpScale());
+            else {
+                state->nextDumpIndex = dumps.dumped++;
+                dumpFrame = true;
+            }
+        }
+        if (!present(buffer.width, buffer.height, true, pixels, nullptr, {}, VK_FILTER_LINEAR, dumpFrame)) {
+            if (dumpFrame) --dumps.dumped;
+            return false;
+        }
+        return true;
     }
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
     // The display buffer is usually a resident render target whose results are still on the GPU: it
@@ -3081,6 +3164,8 @@ Graphics::Context VulkanDevice::buildContext() const {
     context.pipelineExecutableInfo = state->pipelineExecutableInfo;
     context.srgbDecodeFormats = state->srgbDecodeFormats;
     context.sampleLocationSampleCounts = state->sampleLocationSampleCounts;
+    context.triangleFans = state->triangleFans;
+    context.samplerMipLodBias = state->samplerMipLodBias;
     context.memoryProperties2 = state->memoryBudget ? state->InstanceFunction<PFN_vkGetPhysicalDeviceMemoryProperties2>("vkGetPhysicalDeviceMemoryProperties2") : nullptr;
     context.singlePassStorage = state->storageImageWithoutFormat;
     return context;

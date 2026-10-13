@@ -174,6 +174,8 @@ struct Context {
     bool provokingVertexModePerPipeline = false;
     bool singlePassStorage = false;
     VkSampleCountFlags sampleLocationSampleCounts = 0;
+    bool triangleFans = true;
+    bool samplerMipLodBias = true;
 
     template<typename TFunction>
     TFunction Function(const char* name) const {
