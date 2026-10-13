@@ -9,6 +9,19 @@ python3 "$root/core/relinker/relinker/tests/macos/import_fixture.py" "$guest/imp
 "$build/core/relinker/relinker" --macos --skip-sce-module "$guest/import.elf" "$guest/eboot"
 cp "$build/core/libs/libs/"*.prx "$guest/libs/"
 echo "relinked guest"
+python3 - "$guest/eboot" <<'PY'
+import struct, sys
+data = open(sys.argv[1], "rb").read()
+ncmds, sizeofcmds = struct.unpack_from("<II", data, 16)
+offset = 32
+entry = None
+for _ in range(ncmds):
+    cmd, size = struct.unpack_from("<II", data, offset)
+    if cmd == 0x80000028:
+        entry = struct.unpack_from("<Q", data, offset + 8)[0]
+    offset += size
+print(f"entryoff 0x{entry:x} bytes {data[entry:entry+24].hex()}")
+PY
 set +e
 NSUnbufferedIO=YES APS5_TRACE_START=1 APS5_TRACE_EXIT=1 "$guest/eboot"
 guest_status=$?
