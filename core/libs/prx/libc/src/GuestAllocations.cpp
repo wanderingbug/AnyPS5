@@ -115,6 +115,7 @@ bool backWritableImageAnonymously() {
 [[maybe_unused]] const bool writableImageAnonymous = backWritableImageAnonymously();
 #elif defined(__APPLE__)
 bool backWritableImageAnonymously() {
+    if (std::getenv("APS5_TRACE_START") != nullptr) std::fprintf(stderr, "[libc] anonymize main image\n");
     for (std::uint32_t image = 0; image < _dyld_image_count(); ++image) {
         const auto* header = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(image));
         if (header == nullptr || header->magic != MH_MAGIC_64 || header->filetype != MH_EXECUTE) continue;

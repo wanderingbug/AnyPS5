@@ -12,6 +12,7 @@
 #include <sys/mman.h>
 #endif
 #include <cstdio>
+#include <cstdlib>
 #include <iterator>
 #include <map>
 #include <mutex>
@@ -297,6 +298,7 @@ private:
     }
 
     void SeedAppleUsedRanges() {
+        if (std::getenv("APS5_TRACE_START") != nullptr) std::fprintf(stderr, "[libc] reserve guest arena\n");
         mach_vm_address_t address = ArenaStart;
         while (address < ApplicationAreaEnd) {
             mach_vm_size_t size = 0;

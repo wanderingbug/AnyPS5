@@ -606,8 +606,19 @@ int APS5_VABI getgroups_nid_postfix(int capacity, std::uint32_t* groups) {
     return count;
 }
 
+}
+
 #ifdef __APPLE__
-void Aps5StartGuest_nid_no_patch(void (*entry)(void*, void*), void* stack) {
+struct GuestStartTrace {
+    GuestStartTrace() {
+        if (std::getenv("APS5_TRACE_START") != nullptr) std::fprintf(stderr, "[kernel] libkernel static init\n");
+    }
+};
+
+const GuestStartTrace guestStartTrace;
+
+extern "C" void Aps5StartGuest_nid_no_patch(void (*entry)(void*, void*), void* stack) {
+    (void)guestStartTrace;
     if (std::getenv("APS5_TRACE_START") != nullptr) {
         const auto* bytes = reinterpret_cast<const unsigned char*>(entry);
         std::fprintf(stderr, "[kernel] start entry=%p stack=%p\n", reinterpret_cast<void*>(entry), stack);
@@ -619,5 +630,3 @@ void Aps5StartGuest_nid_no_patch(void (*entry)(void*, void*), void* stack) {
     if (std::getenv("APS5_TRACE_START") != nullptr) std::fprintf(stderr, "[kernel] entry returned\n");
 }
 #endif
-
-}
