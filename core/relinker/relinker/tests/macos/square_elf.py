@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from nid import nid
 
 SHF_ALLOC = 2
+SHF_EXECINSTR = 4
 R_X86_64_PC32 = 2
 R_X86_64_GOTPCREL = 9
 R_X86_64_GOTPCRELX = 41
@@ -67,14 +68,25 @@ def link_object(blob):
     blob, sections = read_elf_object(blob)
     by_index = {index: section for index, section in enumerate(sections)}
     allocated = [(index, section) for index, section in enumerate(sections) if section["flags"] & SHF_ALLOC and section["kind"] == 1 and section["size"]]
+    executable = [(index, section) for index, section in allocated if section["flags"] & SHF_EXECINSTR]
+    readonly = [(index, section) for index, section in allocated if section["flags"] & SHF_EXECINSTR == 0]
     cursor = 0x10000
     placed = {}
     pieces = []
-    for index, section in allocated:
-        cursor = align(cursor, section["align"])
-        placed[index] = cursor
-        pieces.append((cursor, section_bytes(blob, section)))
-        cursor += section["size"]
+
+    def place_sections(sections_to_place):
+        nonlocal cursor
+        for index, section in sections_to_place:
+            cursor = align(cursor, section["align"])
+            placed[index] = cursor
+            pieces.append((cursor, section_bytes(blob, section)))
+            cursor += section["size"]
+
+    place_sections(executable)
+    code_end = cursor
+    cursor = align(cursor, 0x1000)
+    ro_start = cursor
+    place_sections(readonly)
     symtab = next(section for section in sections if section["kind"] == 2)
     strtab = by_index[symtab["link"]]
     symbols = []
@@ -135,8 +147,8 @@ def link_object(blob):
     sym_va = align(str_va + len(strings), 8)
     rela_va = align(sym_va + sym_size, 8)
     dyn_va = align(rela_va + rela_size, 8)
-    rx_end = dyn_va + dyn_size
-    got_va = align(rx_end, 0x1000)
+    ro_end = dyn_va + dyn_size
+    got_va = align(ro_end, 0x1000)
     for index, (tag, value) in enumerate(tags):
         if tag == 5:
             tags[index] = (tag, str_va)
@@ -161,9 +173,9 @@ def link_object(blob):
             image_rx[file_at:file_at + 4] = struct.pack("<i", target)
         else:
             raise SystemExit(f"unsupported relocation {kind} for {symbol['name']}")
-    rx_size = rx_end - 0x10000
-    if len(image_rx) < rx_size:
-        image_rx.extend(b"\0" * (rx_size - len(image_rx)))
+    ro_file_end = ro_end - 0x10000
+    if len(image_rx) < ro_file_end:
+        image_rx.extend(b"\0" * (ro_file_end - len(image_rx)))
     image_rx[str_va - 0x10000:str_va - 0x10000 + len(strings)] = strings
     for index, name_offset in enumerate(qualified, 1):
         struct.pack_into("<IBBHQQ", image_rx, sym_va - 0x10000 + index * 24, name_offset, 0x12, 0, 0, 0, 0)
@@ -175,15 +187,18 @@ def link_object(blob):
     image = bytearray(got_va + got_size)
     image[0x10000:0x10000 + len(image_rx)] = image_rx
     image[:16] = b"\x7fELF\x02\x01\x01" + bytes(9)
-    struct.pack_into("<HHIQQQIHHHHHH", image, 16, 3, 62, 1, entry, 64, 0, 0, 64, 56, 3, 64, 0, 0)
-    struct.pack_into("<IIQQQQQQ", image, 64, 1, 5, 0x10000, 0x10000, 0x10000, rx_size, rx_size, 0x1000)
-    struct.pack_into("<IIQQQQQQ", image, 120, 1, 6, got_va, got_va, got_va, got_size, got_size, 0x1000)
-    struct.pack_into("<IIQQQQQQ", image, 176, 2, 4, dyn_va, dyn_va, dyn_va, dyn_size, dyn_size, 8)
+    code_size = code_end - 0x10000
+    ro_size = ro_end - ro_start
+    struct.pack_into("<HHIQQQIHHHHHH", image, 16, 3, 62, 1, entry, 64, 0, 0, 64, 56, 4, 64, 0, 0)
+    struct.pack_into("<IIQQQQQQ", image, 64, 1, 5, 0x10000, 0x10000, 0x10000, code_size, code_size, 0x1000)
+    struct.pack_into("<IIQQQQQQ", image, 120, 1, 4, ro_start, ro_start, ro_start, ro_size, ro_size, 0x1000)
+    struct.pack_into("<IIQQQQQQ", image, 176, 1, 6, got_va, got_va, got_va, got_size, got_size, 0x1000)
+    struct.pack_into("<IIQQQQQQ", image, 232, 2, 4, dyn_va, dyn_va, dyn_va, dyn_size, dyn_size, 8)
     return bytes(image), entry, imports
 
 
 PAYLOAD = """
-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
+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
 """
 
 
@@ -206,8 +221,8 @@ def rebuild(path):
     script = open(__file__, "r", encoding="utf-8").read()
     begin_mark = "PAYLOAD = \"\"\"\n"
     end_mark = "\"\"\"\n"
-    begin = script.index(begin_mark) + len(begin_mark)
-    end = script.index(end_mark, begin)
+    begin = script.index(begin_mark)
+    end = script.index(end_mark, begin + len(begin_mark)) + len(end_mark)
     wrapped = "PAYLOAD = \"\"\"\n" + encoded + "\n\"\"\"\n"
     open(__file__, "w", encoding="utf-8").write(script[:begin] + wrapped + script[end:])
     print(f"entry 0x{entry:x} imports {len(imports)} bytes {len(image)} sha256 {hashlib.sha256(image).hexdigest()}")
