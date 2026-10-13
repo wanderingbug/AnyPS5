@@ -381,7 +381,12 @@ void VideoOutDriver::Shutdown() {
         }
         stopped = true;
         std::lock_guard lock(flipQueue->mutex);
-        if (flipQueue->failure) std::rethrow_exception(flipQueue->failure);
+        if (flipQueue->failure) {
+            try {
+                std::rethrow_exception(flipQueue->failure);
+            } catch (const ProcessShutdown&) {
+            }
+        }
         return;
     }
 #endif
