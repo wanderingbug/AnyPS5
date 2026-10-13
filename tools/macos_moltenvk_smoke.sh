@@ -17,12 +17,34 @@ elif [ -f /usr/local/lib/libMoltenVK.dylib ]; then
     fi
 else
     archive=$guest/MoltenVK-macos.tar
-    curl -fL --retry 3 -o "$archive" "$moltenvk_url"
-    tar -xf "$archive" -C "$guest" "$moltenvk_member"
+    echo "downloading MoltenVK $moltenvk_version"
+    curl -fsSL --retry 3 -o "$archive" "$moltenvk_url"
+    echo "unpacking MoltenVK"
+    tar -xf "$archive" -C "$guest"
     cp "$guest/$moltenvk_member" "$guest/moltenvk/libMoltenVK.dylib"
     rm -rf "$guest/MoltenVK" "$archive"
 fi
-file "$guest/moltenvk/libMoltenVK.dylib" | grep -q x86_64
+python3 - "$guest/moltenvk/libMoltenVK.dylib" <<'PY'
+import struct, sys
+path = sys.argv[1]
+data = open(path, "rb").read(4096)
+magic, = struct.unpack_from(">I", data, 0)
+names = {0x00000007: "i386", 0x01000007: "x86_64", 0x0000000C: "arm", 0x0100000C: "arm64"}
+cpus = []
+if magic in (0xCAFEBABE, 0xBEBAFECA):
+    count, = struct.unpack_from(">I", data, 4)
+    for index in range(count):
+        cputype, = struct.unpack_from(">I", data, 8 + index * 20)
+        cpus.append(names.get(cputype, hex(cputype)))
+elif magic == 0xFEEDFACF:
+    cputype, = struct.unpack_from("<I", data, 4)
+    cpus.append(names.get(cputype, hex(cputype)))
+else:
+    raise SystemExit(f"libMoltenVK.dylib is not a Mach-O file (magic {magic:#x})")
+print("libMoltenVK.dylib architectures:", " ".join(cpus))
+if "x86_64" not in cpus:
+    raise SystemExit("libMoltenVK.dylib has no x86-64 slice")
+PY
 python3 "$root/core/relinker/relinker/tests/macos/square_elf.py" "$guest/square.elf"
 "$build/core/relinker/relinker" --macos --skip-sce-module "$guest/square.elf" "$guest/eboot"
 cp "$build/core/libs/libs/"*.prx "$guest/libs/"
