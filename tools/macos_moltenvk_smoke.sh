@@ -2,6 +2,10 @@
 set -eu
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 build=${1:-$root/build}
+case $build in
+    /*) ;;
+    *) build=$root/$build ;;
+esac
 guest=$build/macos-square
 moltenvk_version=v1.4.2
 moltenvk_url=https://github.com/KhronosGroup/MoltenVK/releases/download/${moltenvk_version}/MoltenVK-macos.tar
