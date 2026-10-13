@@ -485,6 +485,7 @@ void MachONidPatcher::PatchNids(std::vector<std::uint8_t>& binary, const std::st
     for (std::size_t index = 0; index < exports.size(); ++index) {
         const auto& name = names[index];
         const bool marked = name.ends_with(Internal::kNidPostfix) || Internal::IsNidNoPatch(name) || Internal::IsNidNoPatchCut(name);
+        if (name == "__stack_chk_guard") continue;
         if ((exports[index].Flags & kExportWeakDefinition) != 0 && !marked) continue;
         const auto found = nidMap.find(name);
         if (found == nidMap.end()) throw std::runtime_error("symbol not in nid map: " + name);
