@@ -1,8 +1,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-void *aligned_alloc(size_t alignment, size_t size);
-void free(void *pointer);
 char *getenv(const char *name);
 void exit(int status);
 int puts(const char *text);
@@ -18,6 +16,8 @@ int sceAudioOutOpen(int userId, int type, int index, uint32_t len, uint32_t freq
 int sceAudioOutOutput(int handle, const void *ptr);
 
 enum { SquareWidth = 320, SquareHeight = 180, SquareSize = 28, SquareFramesDefault = 180 };
+
+static uint8_t square_pixels[262144] __attribute__((aligned(65536)));
 
 struct SquareBuffers {
     const void *data;
@@ -61,7 +61,7 @@ static void tone(int16_t *samples) {
 }
 
 void guest_start(void *stack, void *unused) {
-    uint8_t *pixels;
+    uint8_t *pixels = square_pixels;
     struct SquareBuffers buffers;
     unsigned char attribute[128];
     unsigned char padData[256];
@@ -79,11 +79,6 @@ void guest_start(void *stack, void *unused) {
     (void)stack;
     (void)unused;
     frames = square_frames(getenv("APS5_SQUARE_FRAMES"));
-    pixels = (uint8_t *)aligned_alloc(65536, 262144);
-    if (pixels == 0) {
-        puts("square alloc failed");
-        exit(1);
-    }
     buffers.data = pixels;
     buffers.metadata = 0;
     buffers.reserved0 = 0;
@@ -133,6 +128,5 @@ void guest_start(void *stack, void *unused) {
         }
     }
     puts("square presented");
-    free(pixels);
     exit(0);
 }

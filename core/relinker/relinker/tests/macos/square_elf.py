@@ -17,6 +17,7 @@ from nid import nid
 
 SHF_ALLOC = 2
 SHF_EXECINSTR = 4
+SHT_NOBITS = 8
 R_X86_64_PC32 = 2
 R_X86_64_GOTPCREL = 9
 R_X86_64_GOTPCRELX = 41
@@ -149,6 +150,15 @@ def link_object(blob):
     dyn_va = align(rela_va + rela_size, 8)
     ro_end = dyn_va + dyn_size
     got_va = align(ro_end, 0x1000)
+    got_size = len(imports) * 8
+    nobits = [(index, section) for index, section in enumerate(sections) if section["flags"] & SHF_ALLOC and section["flags"] & SHF_EXECINSTR == 0 and section["kind"] == SHT_NOBITS and section["size"]]
+    bss_cursor = align(got_va + got_size, 0x10000)
+    bss_start = bss_cursor
+    for index, section in nobits:
+        bss_cursor = align(bss_cursor, max(section["align"], 1))
+        placed[index] = bss_cursor
+        bss_cursor += section["size"]
+    bss_size = bss_cursor - bss_start
     for index, (tag, value) in enumerate(tags):
         if tag == 5:
             tags[index] = (tag, str_va)
@@ -183,22 +193,24 @@ def link_object(blob):
         struct.pack_into("<QQq", image_rx, rela_va - 0x10000 + (index - 1) * 24, got_va + (index - 1) * 8, (index << 32) | 6, 0)
     for index, tag in enumerate(tags):
         struct.pack_into("<qQ", image_rx, dyn_va - 0x10000 + index * 16, *tag)
-    got_size = len(imports) * 8
     image = bytearray(got_va + got_size)
     image[0x10000:0x10000 + len(image_rx)] = image_rx
     image[:16] = b"\x7fELF\x02\x01\x01" + bytes(9)
     code_size = code_end - 0x10000
     ro_size = ro_end - ro_start
-    struct.pack_into("<HHIQQQIHHHHHH", image, 16, 3, 62, 1, entry, 64, 0, 0, 64, 56, 4, 64, 0, 0)
+    phnum = 5 if bss_size else 4
+    struct.pack_into("<HHIQQQIHHHHHH", image, 16, 3, 62, 1, entry, 64, 0, 0, 64, 56, phnum, 64, 0, 0)
     struct.pack_into("<IIQQQQQQ", image, 64, 1, 5, 0x10000, 0x10000, 0x10000, code_size, code_size, 0x1000)
     struct.pack_into("<IIQQQQQQ", image, 120, 1, 4, ro_start, ro_start, ro_start, ro_size, ro_size, 0x1000)
     struct.pack_into("<IIQQQQQQ", image, 176, 1, 6, got_va, got_va, got_va, got_size, got_size, 0x1000)
     struct.pack_into("<IIQQQQQQ", image, 232, 2, 4, dyn_va, dyn_va, dyn_va, dyn_size, dyn_size, 8)
+    if bss_size:
+        struct.pack_into("<IIQQQQQQ", image, 288, 1, 6, 0, bss_start, bss_start, 0, bss_size, 0x10000)
     return bytes(image), entry, imports
 
 
 PAYLOAD = """
-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
+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
 """
 
 
