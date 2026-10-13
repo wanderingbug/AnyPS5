@@ -54,6 +54,10 @@ PY
 python3 "$root/core/relinker/relinker/tests/macos/square_elf.py" "$guest/square.elf"
 "$build/core/relinker/relinker" --macos --skip-sce-module "$guest/square.elf" "$guest/eboot"
 cp "$build/core/libs/libs/"*.prx "$guest/libs/"
+mkdir -p "$guest/app0/sce_sys"
+cat > "$guest/app0/sce_sys/param.json" <<'EOF'
+{"titleId":"SQRE00001","localizedParameters":{"defaultLanguage":"en-US","en-US":{"titleName":"Square"}}}
+EOF
 echo "relinked square"
 cd "$guest"
 set +e

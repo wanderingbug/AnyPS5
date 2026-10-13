@@ -17,7 +17,7 @@ int sceAudioOutOutput(int handle, const void *ptr);
 
 enum { SquareWidth = 320, SquareHeight = 180, SquareSize = 28, SquareFramesDefault = 180 };
 
-static uint8_t square_pixels[262144] __attribute__((aligned(65536)));
+static _Alignas(65536) uint8_t square_pixels[262144];
 
 struct SquareBuffers {
     const void *data;
