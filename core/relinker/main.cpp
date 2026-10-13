@@ -30,6 +30,9 @@
 #include <memory>
 #include <string>
 #include <vector>
+#ifdef __APPLE__
+#include <system_error>
+#endif
 
 #ifdef _WIN32
 #include <windows.h>
@@ -197,7 +200,14 @@ int Run(const int argc, char* argv[]) {
         }
         fileWriter.Write(absPath, executableBytes);
 #ifdef __APPLE__
-        if (args.toMacos) AdHocSign(absPath);
+        if (args.toMacos) {
+            AdHocSign(absPath);
+            std::error_code error;
+            std::filesystem::permissions(Io::NativePath(absPath),
+                std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+                std::filesystem::perm_options::add, error);
+            if (error) throw Domain::RelinkerException("Cannot mark '" + absPath + "' executable: " + error.message());
+        }
 #endif
         if (desktopEntry) std::cout << "Desktop entry: " << Io::Utf8Path(desktopEntryWriter.Write(*desktopEntry)) << '\n';
         std::cout << "External prx references: " << result.RegistryEntries.size() << "\nOutput file: " << absPath << '\n';

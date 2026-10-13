@@ -106,8 +106,10 @@ int main() {
         static_cast<unsigned long long>(ArenaStart), static_cast<unsigned long long>(ApplicationAreaEnd),
         static_cast<unsigned long long>(SystemReservedStart), static_cast<unsigned long long>(SystemReservedEnd));
 
+    constexpr std::uintptr_t ImageBase = 0x0000000140000000ull;
     std::vector<std::pair<std::uintptr_t, std::uintptr_t>> host;
-    mach_vm_address_t address = ArenaStart;
+    mach_vm_address_t address = ImageBase;
+    int seen = 0;
     int printed = 0;
     while (address < ApplicationAreaEnd) {
         mach_vm_size_t size = 0;
@@ -119,21 +121,22 @@ int main() {
         if (result != KERN_SUCCESS || size == 0 || address >= ApplicationAreaEnd) break;
         const auto begin = address < ArenaStart ? ArenaStart : address;
         const auto end = address + size > ApplicationAreaEnd ? ApplicationAreaEnd : address + size;
-        if (begin < end) {
+        const bool overlapsArena = address >= ArenaStart || size > ArenaStart - address;
+        if (overlapsArena && begin < end)
             host.emplace_back(static_cast<std::uintptr_t>(begin), static_cast<std::uintptr_t>(end));
-            if (printed < 32) {
-                char path[PROC_PIDPATHINFO_MAXSIZE] = {};
-                const int length = proc_regionfilename(getpid(), address, path, sizeof(path));
-                std::printf("host  0x%llx..0x%llx prot 0x%x %s\n", static_cast<unsigned long long>(begin), static_cast<unsigned long long>(end), info.protection, length > 0 ? path : "");
-                ++printed;
-            }
+        ++seen;
+        if (printed < 32) {
+            char path[PROC_PIDPATHINFO_MAXSIZE] = {};
+            const int length = proc_regionfilename(getpid(), address, path, sizeof(path));
+            std::printf("host  0x%llx..0x%llx prot 0x%x %s\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(address + size), info.protection, length > 0 ? path : "");
+            ++printed;
         }
         if (address > std::numeric_limits<mach_vm_address_t>::max() - size) break;
         address += size;
     }
-    if (static_cast<int>(host.size()) > printed) std::printf("host  ... %zu regions, printed %d\n", host.size(), printed);
+    if (seen > printed) std::printf("host  ... %d regions, printed %d\n", seen, printed);
 
-    const std::uintptr_t probes[] = {ArenaStart, SystemReservedEnd, 0x0000001000000000ull, 0x0000008000000000ull, 0x000000F000000000ull};
+    const std::uintptr_t probes[] = {ImageBase, ArenaStart, SystemReservedEnd, 0x0000001000000000ull, 0x0000008000000000ull, 0x000000F000000000ull};
     for (const auto probe : probes) {
         Probe(probe, static_cast<std::uintptr_t>(vm_page_size));
         Probe(probe, std::uintptr_t{2} << 20);

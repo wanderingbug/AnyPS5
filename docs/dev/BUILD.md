@@ -66,7 +66,7 @@ cmake --build build --parallel
 cmake --build build --target libs --parallel
 ```
 
-`libs` is still required. The default `BUILD_TESTING=OFF` build does not compile the prx libraries, and it does not run tests. Guest memory is reserved with `mach_vm_allocate` at a fixed address. `build/macos_address_space` prints which parts of the guest window (`0x200000000` through `0xFC00000000`) are already occupied and which fixed reservations succeed; it is an x86-64 binary, so on Apple Silicon it measures Rosetta. `tools/macos_guest_smoke.sh` relinks the repository's macOS import fixture (`puts` and `exit` by NID), ad-hoc signs it, and runs it next to the patched libraries, then runs `GuestThreadSelf`, which starts a guest thread and joins it.
+`libs` is still required. The default `BUILD_TESTING=OFF` build does not compile the prx libraries, and it does not run tests. Guest memory is reserved with `mach_vm_allocate` at a fixed address. `build/macos_address_space` prints host mappings from the relinked image base (`0x140000000`) through the guest window (`0x200000000` through `0xFC00000000`) and which fixed reservations succeed; it is an x86-64 binary, so on Apple Silicon it measures Rosetta. `tools/macos_guest_smoke.sh` relinks the repository's macOS import fixture (`puts` and `exit` by NID), ad-hoc signs it, marks it executable, and runs it next to the patched libraries, then runs `GuestThreadSelf`, which starts a guest thread and joins it.
 
 ```sh
 ./build/macos_address_space > address-space.log 2>&1 && echo OK || { echo FAILED; tail -40 address-space.log; }
