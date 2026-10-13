@@ -65,6 +65,7 @@ DYLD_LIBRARY_PATH="$guest/vk${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
     APS5_SQUARE_FRAMES=2 \
     APS5_DUMP_FRAMES=1 \
     APS5_DUMP_SCALE=1 \
+    APS5_NO_GPU_DUMP=1 \
     APS5_SYNC_FLIP=1 \
     NSUnbufferedIO=YES \
     "$guest/eboot"

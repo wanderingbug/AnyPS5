@@ -3,6 +3,7 @@
 
 char *getenv(const char *name);
 void exit(int status);
+void _Exit(int status);
 int puts(const char *text);
 int sceVideoOutOpen(int userId, int busType, int index, const void *param);
 void sceVideoOutSetBufferAttribute2(void *attribute, uint64_t pixelFormat, uint32_t tilingMode, uint32_t width, uint32_t height, uint64_t option, uint32_t dccControl, uint64_t dccClear);
@@ -128,5 +129,5 @@ void guest_start(void *stack, void *unused) {
         }
     }
     puts("square presented");
-    exit(0);
+    _Exit(0);
 }
