@@ -29,6 +29,7 @@
 #include <atomic>
 #include <cerrno>
 #include <cstddef>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -607,7 +608,10 @@ int APS5_VABI getgroups_nid_postfix(int capacity, std::uint32_t* groups) {
 
 #ifdef __APPLE__
 void Aps5StartGuest_nid_no_patch(void (*entry)(void*, void*), void* stack) {
+    const bool trace = std::getenv("APS5_TRACE_START") != nullptr;
+    if (trace) std::fprintf(stderr, "[kernel] start entry=%p stack=%p\n", reinterpret_cast<void*>(entry), stack);
     entry(stack, nullptr);
+    if (trace) std::fprintf(stderr, "[kernel] entry returned\n");
 }
 #endif
 
