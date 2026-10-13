@@ -26,6 +26,11 @@
 #include "prx/libSceAgcDriver/Submit/include/Dcb.hpp"
 #include "prx/libc/include/PreciseWait.hpp"
 #include "prx/libc/include/Shutdown.hpp"
+#ifdef __APPLE__
+#include <unistd.h>
+extern "C" bool Aps5MainThreadIsServing_nid_no_patch();
+extern "C" void Aps5PostMainThreadJob_nid_no_patch(void (*job)(void*), void* context);
+#endif
 
 namespace {
 
@@ -34,6 +39,13 @@ constexpr std::uint64_t PRESENT_POLL_MICROS = 10000;
 
 void require(bool condition, const char* reason) {
     if (!condition) throw std::runtime_error(std::string("VideoOut: ") + reason);
+}
+
+void initPresentationSubsystem() {
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+    if (SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
+        throw std::runtime_error(std::string("SDL_InitSubSystem(VIDEO | GAMECONTROLLER) failed: ") + SDL_GetError());
+    }
 }
 
 std::vector<const char*> windowExtensions(SDL_Window* window) {
@@ -256,11 +268,60 @@ VideoOutDriver& VideoOutDriver::Get() {
     return instance;
 }
 
-VideoOutDriver::VideoOutDriver() {
-    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
-    if (SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
-        throw std::runtime_error(std::string("SDL_InitSubSystem(VIDEO | GAMECONTROLLER) failed: ") + SDL_GetError());
+#ifdef __APPLE__
+void runPresenterOnMainThread(void* context) {
+    auto& driver = *static_cast<VideoOutDriver*>(context);
+    bool initialized = false;
+    try {
+        AgcDriverRaiseWorkerThreadPriority_nid_postfix("presenter");
+        initPresentationSubsystem();
+        initialized = true;
+        driver.presentLoop(driver.presentStop.get_token(), driver.presentStarted);
+    } catch (...) {
+        try {
+            driver.presentStarted.set_exception(std::current_exception());
+        } catch (const std::future_error&) {
+        }
     }
+    if (initialized) SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER);
+    try {
+        driver.presentFinished.set_value();
+    } catch (const std::future_error&) {
+    }
+    for (;;) ::pause();
+}
+#endif
+
+VideoOutDriver::VideoOutDriver() {
+#ifdef __APPLE__
+    if (Aps5MainThreadIsServing_nid_no_patch()) {
+        presentOnMain = true;
+        AgcDriverWaitIdle_nid_postfix();
+        Aps5PostMainThreadJob_nid_no_patch(&runPresenterOnMainThread, this);
+        try {
+            presentStarted.get_future().get();
+        } catch (...) {
+            presentFinished.get_future().wait();
+            throw;
+        }
+        try {
+            vblankThread = std::jthread([this](std::stop_token token) { vblankLoop(token); });
+            LibcRegisterShutdown_nid_postfix([] { VideoOutDriver::Get().Shutdown(); });
+        } catch (...) {
+            presentStop.request_stop();
+            flipQueue->changed.NotifyAll();
+            presentFinished.get_future().wait();
+            if (vblankThread.joinable()) {
+                vblankThread.request_stop();
+                flipQueue->changed.NotifyAll();
+                vblankThread.join();
+            }
+            throw;
+        }
+        return;
+    }
+#endif
+    initPresentationSubsystem();
     try {
         AgcDriverWaitIdle_nid_postfix();
         std::promise<void> started;
@@ -298,6 +359,32 @@ VideoOutDriver::~VideoOutDriver() {
 }
 
 void VideoOutDriver::Shutdown() {
+#ifdef __APPLE__
+    if (presentOnMain) {
+        std::lock_guard shutdownLock(shutdownMutex);
+        if (stopped) return;
+        LibcRequestShutdown_nid_postfix();
+        {
+            std::lock_guard queueLock(flipQueue->mutex);
+            flipQueue->stopping = true;
+        }
+        presentStop.request_stop();
+        vblankThread.request_stop();
+        flipQueue->changed.NotifyAll();
+        presentFinished.get_future().wait();
+        if (vblankThread.joinable()) vblankThread.join();
+        {
+            std::lock_guard lock(mutex);
+            for (int handle = 1; handle < VIDEO_OUT_NUM_MAX; ++handle) {
+                if (outputs[handle]) close(handle);
+            }
+        }
+        stopped = true;
+        std::lock_guard lock(flipQueue->mutex);
+        if (flipQueue->failure) std::rethrow_exception(flipQueue->failure);
+        return;
+    }
+#endif
     require(std::this_thread::get_id() != presentThread.get_id(), "presentation thread cannot stop itself");
     std::lock_guard shutdownLock(shutdownMutex);
     if (stopped) return;

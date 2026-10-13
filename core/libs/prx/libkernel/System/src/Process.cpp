@@ -7,6 +7,7 @@
 #include <tlhelp32.h>
 #elif defined(__APPLE__)
 #include <crt_externs.h>
+#include <dispatch/dispatch.h>
 #include <mach/mach.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -40,6 +41,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 #ifndef _WIN32
 #include <sys/resource.h>
@@ -617,6 +619,27 @@ struct GuestStartTrace {
 
 const GuestStartTrace guestStartTrace;
 
+std::atomic<bool> mainThreadServing{false};
+std::atomic<void (*)(void*)> mainThreadJob{nullptr};
+std::atomic<void*> mainThreadJobContext{nullptr};
+
+dispatch_semaphore_t mainThreadWake() {
+    static auto* semaphore = new dispatch_semaphore_t(dispatch_semaphore_create(0));
+    return *semaphore;
+}
+
+extern "C" bool Aps5MainThreadIsServing_nid_no_patch() {
+    return mainThreadServing.load(std::memory_order_acquire);
+}
+
+extern "C" void Aps5PostMainThreadJob_nid_no_patch(void (*job)(void*), void* context) {
+    if (job == nullptr || !mainThreadServing.load(std::memory_order_acquire)) throw std::runtime_error("main thread is not serving");
+    mainThreadJobContext.store(context, std::memory_order_relaxed);
+    void (*empty)(void*) = nullptr;
+    while (!mainThreadJob.compare_exchange_weak(empty, job, std::memory_order_release)) empty = nullptr;
+    dispatch_semaphore_signal(mainThreadWake());
+}
+
 extern "C" void Aps5StartGuest_nid_no_patch(void (*entry)(void*, void*), void* stack) {
     (void)guestStartTrace;
     if (std::getenv("APS5_TRACE_START") != nullptr) {
@@ -626,7 +649,30 @@ extern "C" void Aps5StartGuest_nid_no_patch(void (*entry)(void*, void*), void* s
         for (int index = 0; index < 16; ++index) std::fprintf(stderr, " %02x", bytes[index]);
         std::fprintf(stderr, "\n");
     }
-    entry(stack, nullptr);
-    if (std::getenv("APS5_TRACE_START") != nullptr) std::fprintf(stderr, "[kernel] entry returned\n");
+    mainThreadServing.store(true, std::memory_order_release);
+    std::thread guest([entry, stack] {
+        try {
+            entry(stack, nullptr);
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "[kernel] guest entry failed: %s\n", error.what());
+            std::fflush(stderr);
+            std::exit(1);
+        } catch (...) {
+            std::fprintf(stderr, "[kernel] guest entry failed\n");
+            std::fflush(stderr);
+            std::exit(1);
+        }
+        std::fprintf(stderr, "[kernel] guest entry returned\n");
+        std::fflush(stderr);
+        std::exit(0);
+    });
+    guest.detach();
+    for (;;) {
+        dispatch_semaphore_wait(mainThreadWake(), DISPATCH_TIME_FOREVER);
+        const auto job = mainThreadJob.exchange(nullptr, std::memory_order_acq_rel);
+        if (job == nullptr) continue;
+        const auto context = mainThreadJobContext.load(std::memory_order_acquire);
+        job(context);
+    }
 }
 #endif

@@ -15,6 +15,9 @@
 #include <future>
 #include <memory>
 #include <stdexcept>
+#ifdef __APPLE__
+#include <stop_token>
+#endif
 #include "prx/libSceAgcDriver/Execution/include/VideoOutput.hpp"
 #include "prx/libSceAgcDriver/Execution/include/DisplayBuffer.hpp"
 #include "prx/libSceVideoOut/include/DisplayWindow.hpp"
@@ -222,6 +225,9 @@ public:
 private:
     bool close(int handle);
     void presentLoop(std::stop_token token, std::promise<void>& started);
+#ifdef __APPLE__
+    friend void runPresenterOnMainThread(void* context);
+#endif
     void vblankLoop(std::stop_token token);
     void vblankEnd();
     void processFlip(FlipRequest& req);
@@ -238,6 +244,12 @@ private:
 
     std::jthread presentThread;
     std::jthread vblankThread;
+#ifdef __APPLE__
+    bool presentOnMain = false;
+    std::stop_source presentStop;
+    std::promise<void> presentStarted;
+    std::promise<void> presentFinished;
+#endif
 };
 
 #endif
