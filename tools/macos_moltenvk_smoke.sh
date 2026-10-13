@@ -7,24 +7,26 @@ moltenvk_version=v1.4.2
 moltenvk_url=https://github.com/KhronosGroup/MoltenVK/releases/download/${moltenvk_version}/MoltenVK-macos.tar
 moltenvk_member=MoltenVK/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
 rm -rf "$guest"
-mkdir -p "$guest/libs" "$guest/moltenvk"
+mkdir -p "$guest/libs" "$guest/vk"
 if [ -n "${MOLTENVK_LIB:-}" ]; then
-    cp "$MOLTENVK_LIB" "$guest/moltenvk/libMoltenVK.dylib"
+    cp "$MOLTENVK_LIB" "$guest/vk/libMoltenVK.dylib"
 elif [ -f /usr/local/lib/libMoltenVK.dylib ]; then
-    cp /usr/local/lib/libMoltenVK.dylib "$guest/moltenvk/libMoltenVK.dylib"
+    cp /usr/local/lib/libMoltenVK.dylib "$guest/vk/libMoltenVK.dylib"
     if [ -f /usr/local/lib/libvulkan.dylib ]; then
-        cp /usr/local/lib/libvulkan.dylib "$guest/moltenvk/libvulkan.dylib"
+        cp /usr/local/lib/libvulkan.dylib "$guest/vk/libvulkan.dylib"
     fi
 else
     archive=$guest/MoltenVK-macos.tar
+    package=$guest/vk-package
     echo "downloading MoltenVK $moltenvk_version"
     curl -fsSL --retry 3 -o "$archive" "$moltenvk_url"
     echo "unpacking MoltenVK"
-    tar -xf "$archive" -C "$guest"
-    cp "$guest/$moltenvk_member" "$guest/moltenvk/libMoltenVK.dylib"
-    rm -rf "$guest/MoltenVK" "$archive"
+    mkdir -p "$package"
+    tar -xf "$archive" -C "$package"
+    cp "$package/$moltenvk_member" "$guest/vk/libMoltenVK.dylib"
+    rm -rf "$package" "$archive"
 fi
-python3 - "$guest/moltenvk/libMoltenVK.dylib" <<'PY'
+python3 - "$guest/vk/libMoltenVK.dylib" <<'PY'
 import struct, sys
 path = sys.argv[1]
 data = open(path, "rb").read(4096)
@@ -51,7 +53,7 @@ cp "$build/core/libs/libs/"*.prx "$guest/libs/"
 echo "relinked square"
 cd "$guest"
 set +e
-DYLD_LIBRARY_PATH="$guest/moltenvk${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
+DYLD_LIBRARY_PATH="$guest/vk${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
     APS5_SQUARE_FRAMES=2 \
     APS5_DUMP_FRAMES=1 \
     APS5_DUMP_SCALE=1 \
