@@ -178,16 +178,17 @@ void* MapAtOrAbove(std::uintptr_t start, size_t len, int prot, size_t alignment)
 }
 #elif defined(__APPLE__)
 void* MapFixedNoReplace(void* addr, size_t len, int prot) {
-    mach_vm_address_t address = reinterpret_cast<mach_vm_address_t>(reinterpret_cast<std::uintptr_t>(addr));
+    const auto wanted = static_cast<mach_vm_address_t>(reinterpret_cast<std::uintptr_t>(addr));
+    mach_vm_address_t address = wanted;
     const kern_return_t allocated = mach_vm_allocate(mach_task_self(), &address, len, VM_FLAGS_FIXED);
-    if (allocated != KERN_SUCCESS || address != reinterpret_cast<mach_vm_address_t>(reinterpret_cast<std::uintptr_t>(addr))) {
+    if (allocated != KERN_SUCCESS || address != wanted) {
         if (allocated == KERN_SUCCESS) mach_vm_deallocate(mach_task_self(), address, len);
         errno = allocated == KERN_NO_SPACE || allocated == KERN_INVALID_ADDRESS ? EEXIST : ENOMEM;
         return MAP_FAILED;
     }
     if (prot != (PROT_READ | PROT_WRITE) && ::mprotect(addr, len, prot) != 0) {
         const int error = errno;
-        mach_vm_deallocate(mach_task_self(), reinterpret_cast<mach_vm_address_t>(reinterpret_cast<std::uintptr_t>(addr)), len);
+        mach_vm_deallocate(mach_task_self(), wanted, len);
         errno = error;
         return MAP_FAILED;
     }
