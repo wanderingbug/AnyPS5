@@ -957,12 +957,12 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
         require(window->context && window->createSurface && window->getDrawableSize && window->width && window->height, "invalid window descriptor");
         instanceExtensions.assign(window->extensions.begin(), window->extensions.end());
     }
-    std::uint32_t availableCount = 0;
+    std::uint32_t instanceExtensionCount = 0;
     const auto enumerateExtensions = state->InstanceFunction<PFN_vkEnumerateInstanceExtensionProperties>("vkEnumerateInstanceExtensionProperties");
-    check(enumerateExtensions(nullptr, &availableCount, nullptr), "vkEnumerateInstanceExtensionProperties");
-    std::vector<VkExtensionProperties> available(availableCount);
-    check(enumerateExtensions(nullptr, &availableCount, available.data()), "vkEnumerateInstanceExtensionProperties");
-    const auto instanceExtension = [&](const char* name) { return std::any_of(available.begin(), available.end(), [&](const auto& item) { return std::strcmp(item.extensionName, name) == 0; }); };
+    check(enumerateExtensions(nullptr, &instanceExtensionCount, nullptr), "vkEnumerateInstanceExtensionProperties");
+    std::vector<VkExtensionProperties> instanceExtensionProperties(instanceExtensionCount);
+    check(enumerateExtensions(nullptr, &instanceExtensionCount, instanceExtensionProperties.data()), "vkEnumerateInstanceExtensionProperties");
+    const auto instanceExtension = [&](const char* name) { return std::any_of(instanceExtensionProperties.begin(), instanceExtensionProperties.end(), [&](const auto& item) { return std::strcmp(item.extensionName, name) == 0; }); };
     if (window != nullptr) {
         for (const auto* name : instanceExtensions) {
             require(name != nullptr, "null instance extension");
@@ -974,7 +974,7 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
             instanceExtensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
         }
         create.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
-        APS5_LOG_OUT("Vulkan instance enumerates portability devices");
+        APS5_LOG_CHARS_OUT("Vulkan instance enumerates portability devices");
     }
     if (!instanceExtensions.empty()) {
         create.enabledExtensionCount = static_cast<std::uint32_t>(instanceExtensions.size());
