@@ -605,4 +605,10 @@ int APS5_VABI getgroups_nid_postfix(int capacity, std::uint32_t* groups) {
     return count;
 }
 
+#ifdef __APPLE__
+void Aps5StartGuest_nid_no_patch(void (*entry)(void*, void*), void* stack) {
+    entry(stack, nullptr);
+}
+#endif
+
 }
