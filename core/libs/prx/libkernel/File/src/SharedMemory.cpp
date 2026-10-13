@@ -14,6 +14,7 @@
 #include <limits>
 #include <optional>
 #include <atomic>
+#include <mutex>
 
 #ifdef _WIN32
 #include <fcntl.h>
@@ -37,6 +38,23 @@ extern "C" int* APS5_VABI __error_nid_postfix();
 
 namespace {
 
+#ifdef __APPLE__
+struct SharedFileIdentity {
+    dev_t device;
+    ino_t inode;
+};
+
+std::mutex sharedFileLock;
+std::vector<SharedFileIdentity> sharedFiles;
+
+void RememberSharedFile(int descriptor) {
+    struct stat status{};
+    if (::fstat(descriptor, &status) != 0) return;
+    std::lock_guard lock(sharedFileLock);
+    sharedFiles.push_back(SharedFileIdentity{status.st_dev, status.st_ino});
+}
+#endif
+
 bool IsHostSharedMemoryDescriptor(int descriptor) {
 #ifdef __linux__
     char descriptorPath[64];
@@ -47,6 +65,14 @@ bool IsHostSharedMemoryDescriptor(int descriptor) {
     objectPath[length] = '\0';
     return std::string_view(objectPath).starts_with("/dev/shm/anyps5-shm-") ||
         std::string_view(objectPath).starts_with("/memfd:anyps5 shm_open");
+#elif defined(__APPLE__)
+    struct stat status{};
+    if (::fstat(descriptor, &status) != 0) return false;
+    std::lock_guard lock(sharedFileLock);
+    for (const auto& identity : sharedFiles) {
+        if (identity.device == status.st_dev && identity.inode == status.st_ino) return true;
+    }
+    return false;
 #else
     (void)descriptor;
     return false;
@@ -176,7 +202,12 @@ int OpenNamedFile(const char* path, int flags, int mode) {
         descriptor = ::shm_open(hostName.c_str(), hostFlags | O_CLOEXEC, 0);
     }
     if (descriptor >= 0) {
-        if (!created || ::fchmod(descriptor, permissions) == 0) return descriptor;
+        if (!created || ::fchmod(descriptor, permissions) == 0) {
+#ifdef __APPLE__
+            RememberSharedFile(descriptor);
+#endif
+            return descriptor;
+        }
         const int error = errno;
         ::close(descriptor);
         ::shm_unlink(hostName.c_str());
@@ -225,6 +256,7 @@ int CreateAnonymousFile() {
         errno = error;
         return -1;
     }
+    RememberSharedFile(descriptor);
     return descriptor;
 #else
     const int descriptor = memfd_create("anyps5 shm_open", MFD_CLOEXEC);

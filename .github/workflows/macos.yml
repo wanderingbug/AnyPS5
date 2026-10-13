@@ -25,5 +25,15 @@ jobs:
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DCMAKE_OSX_ARCHITECTURES=x86_64
       - name: Build
         run: cmake --build build --parallel
+      - name: Measure the Rosetta guest address space
+        run: ./build/macos_address_space > address-space.log 2>&1 && echo OK || { echo FAILED; tail -40 address-space.log; exit 1; }
+      - name: Show the address-space log
+        if: always()
+        run: cat address-space.log
       - name: Build the prx libraries
         run: cmake --build build --target libs --parallel
+      - name: Run the relinked guest and a guest thread
+        run: tools/macos_guest_smoke.sh build > guest-smoke.log 2>&1 && echo OK || { echo FAILED; tail -40 guest-smoke.log; exit 1; }
+      - name: Show the guest smoke log
+        if: always()
+        run: cat guest-smoke.log

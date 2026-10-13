@@ -88,10 +88,17 @@ set_target_properties(libc PROPERTIES
 set(LIBC_UNPATCHED ${UNPATCHED_DIR}/libc.prx)
 set(LIBC_PATCHED ${PATCHED_DIR}/libc.prx)
 
+if(APPLE)
+    set(LIBC_RESIGN COMMAND codesign --force --sign - "${LIBC_PATCHED}")
+else()
+    set(LIBC_RESIGN)
+endif()
+
 add_custom_command(
         OUTPUT ${LIBC_PATCHED}
         COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_UNPATCHED} ${LIBC_PATCHED}
         COMMAND $<TARGET_FILE:nid_patcher> libc ${LIBC_PATCHED}
+        ${LIBC_RESIGN}
         DEPENDS nid_patcher libc ${LIBC_UNPATCHED}
         COMMENT "Patching NIDs for libc"
 )
@@ -142,11 +149,17 @@ foreach(LIB_DIR ${LIBS_DIRS})
 
         set(UNPATCHED_FILE ${UNPATCHED_DIR}/${LIB_NAME}.prx)
         set(PATCHED_FILE ${PATCHED_DIR}/${LIB_NAME}.prx)
+        if(APPLE)
+            set(LIB_RESIGN COMMAND codesign --force --sign - "${PATCHED_FILE}")
+        else()
+            set(LIB_RESIGN)
+        endif()
 
         add_custom_command(
                 OUTPUT ${PATCHED_FILE}
                 COMMAND ${CMAKE_COMMAND} -E copy ${UNPATCHED_FILE} ${PATCHED_FILE}
                 COMMAND $<TARGET_FILE:nid_patcher> ${LIB_NAME} --preserve-exports "${LIBC_UNPATCHED}" "${PATCHED_FILE}"
+                ${LIB_RESIGN}
                 DEPENDS nid_patcher ${LIB_NAME} ${UNPATCHED_FILE} ${LIBC_UNPATCHED}
                 COMMENT "Patching NIDs for ${LIB_NAME}"
         )
@@ -156,6 +169,18 @@ foreach(LIB_DIR ${LIBS_DIRS})
 endforeach()
 
 add_custom_target(libs DEPENDS ${PATCHED_OUTPUTS})
+
+if(APPLE)
+    add_executable(macos_address_space ${CMAKE_SOURCE_DIR}/tools/macos_address_space.cpp)
+    set_target_properties(macos_address_space PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    add_executable(macos_guest_thread_self EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/tests/GuestThreadSelf.cpp)
+    target_include_directories(macos_guest_thread_self PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(macos_guest_thread_self PRIVATE libkernel libc)
+    set_target_properties(macos_guest_thread_self PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+        BUILD_RPATH "${UNPATCHED_DIR}")
+    add_dependencies(libs macos_address_space macos_guest_thread_self)
+endif()
 
 if(BUILD_TESTING)
     add_test_executable(guest_posix_scalar_io_tests tests/GuestPosixScalarIo.cpp)

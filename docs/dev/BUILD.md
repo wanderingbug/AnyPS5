@@ -66,7 +66,12 @@ cmake --build build --parallel
 cmake --build build --target libs --parallel
 ```
 
-`libs` is still required. The default `BUILD_TESTING=OFF` build does not compile the prx libraries, and it does not run tests. Guest memory mapping is not implemented: a title that maps memory throws.
+`libs` is still required. The default `BUILD_TESTING=OFF` build does not compile the prx libraries, and it does not run tests. Guest memory is reserved with `mach_vm_allocate` at a fixed address. `build/macos_address_space` prints which parts of the guest window (`0x200000000` through `0xFC00000000`) are already occupied and which fixed reservations succeed; it is an x86-64 binary, so on Apple Silicon it measures Rosetta. `tools/macos_guest_smoke.sh` relinks the repository's macOS import fixture (`puts` and `exit` by NID), ad-hoc signs it, and runs it next to the patched libraries, then runs `GuestThreadSelf`, which starts a guest thread and joins it.
+
+```sh
+./build/macos_address_space > address-space.log 2>&1 && echo OK || { echo FAILED; tail -40 address-space.log; }
+tools/macos_guest_smoke.sh build > guest-smoke.log 2>&1 && echo OK || { echo FAILED; tail -40 guest-smoke.log; }
+```
 
 Configuration downloads `ffmpeg-macos-x64.zip` from the `ext-ffmpeg-core` release named by the `3rdparty/ffmpeg-core` submodule's 12-character commit (`https://github.com/KytyPS5/ext-ffmpeg-core/releases/download/<sha>/ffmpeg-macos-x64.zip`) and unpacks it under the build directory. To skip the download, unpack that zip, or build the matching `ffmpeg-source-macos-x64.tar.gz` from the same release for x86-64, and pass `-DFFMPEG_PREBUILT_DIR=<path>`. The directory must contain `include/libavcodec/avcodec.h` and `lib/libavcodec.a` (and the other FFmpeg static libraries the package ships).
 

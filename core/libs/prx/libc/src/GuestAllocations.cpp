@@ -26,6 +26,15 @@
 #include <link.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#elif defined(__APPLE__)
+#include <cerrno>
+#include <cstring>
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <sys/mman.h>
+#include <system_error>
+#include <unistd.h>
+#include "prx/libc/include/specifics/linux/ElfTypes.hpp"
 #endif
 
 namespace GuestAllocations {
@@ -99,6 +108,46 @@ bool backWritableImageAnonymously() {
         if (copy == MAP_FAILED) throw std::system_error(errno, std::generic_category(), "mmap of an anonymous main image copy failed");
         std::memcpy(copy, image, bytes);
         if (mremap(copy, bytes, bytes, MREMAP_MAYMOVE | MREMAP_FIXED, image) == MAP_FAILED) throw std::system_error(errno, std::generic_category(), "mremap of an anonymous main image copy failed");
+    }
+    return true;
+}
+
+[[maybe_unused]] const bool writableImageAnonymous = backWritableImageAnonymously();
+#elif defined(__APPLE__)
+bool backWritableImageAnonymously() {
+    for (std::uint32_t image = 0; image < _dyld_image_count(); ++image) {
+        const auto* header = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(image));
+        if (header == nullptr || header->magic != MH_MAGIC_64 || header->filetype != MH_EXECUTE) continue;
+        const auto slide = static_cast<std::uintptr_t>(_dyld_get_image_vmaddr_slide(image));
+        const auto* command = reinterpret_cast<const load_command*>(header + 1);
+        for (std::uint32_t index = 0; index < header->ncmds; ++index) {
+            if (command->cmd == LC_SEGMENT_64 && command->cmdsize >= sizeof(segment_command_64)) {
+                const auto* segment = reinterpret_cast<const segment_command_64*>(command);
+                const bool writable = (segment->initprot & VM_PROT_WRITE) != 0;
+                const bool readable = (segment->initprot & VM_PROT_READ) != 0;
+                const bool executable = (segment->initprot & VM_PROT_EXECUTE) != 0;
+                if (writable && readable && !executable && segment->vmsize != 0 && segment->vmaddr != 0) {
+                    if (segment->vmaddr > std::numeric_limits<std::uintptr_t>::max() - slide) throw std::runtime_error("mremap: guest image segment address overflow");
+                    const auto bytes = static_cast<std::size_t>(segment->vmsize);
+                    auto* imageBytes = reinterpret_cast<void*>(static_cast<std::uintptr_t>(segment->vmaddr) + slide);
+                    auto* copy = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+                    if (copy == MAP_FAILED) throw std::system_error(errno, std::generic_category(), "mmap of an anonymous main image copy failed");
+                    std::memcpy(copy, imageBytes, bytes);
+                    auto* placed = ::mmap(imageBytes, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+                    if (placed != imageBytes) {
+                        const int error = errno;
+                        if (placed != MAP_FAILED) ::munmap(placed, bytes);
+                        ::munmap(copy, bytes);
+                        throw std::system_error(error, std::generic_category(), "mremap of an anonymous main image copy failed");
+                    }
+                    std::memcpy(imageBytes, copy, bytes);
+                    ::munmap(copy, bytes);
+                }
+            }
+            if (command->cmdsize < sizeof(load_command)) break;
+            command = reinterpret_cast<const load_command*>(reinterpret_cast<const std::uint8_t*>(command) + command->cmdsize);
+        }
+        break;
     }
     return true;
 }
@@ -276,7 +325,74 @@ void GuestAllocationsRegisterMainImage_nid_postfix(void*) {
 }
 #elif defined(__APPLE__)
 void GuestAllocationsRegisterMainImage_nid_postfix(void*) {
-    throw std::runtime_error("TODO: macOS GuestAllocations::RegisterMainImage is not implemented");
+    auto& state = registry();
+    if (state.mainImageRegistered) return;
+    struct Page {
+        bool readable = false;
+        bool writable = false;
+    };
+    std::map<std::uint64_t, Page> pages;
+    const auto pageSize = static_cast<std::uint64_t>(::sysconf(_SC_PAGESIZE));
+    std::pair<std::map<std::uint64_t, Page>*, std::uint64_t> collection{&pages, pageSize};
+    dl_iterate_phdr([](dl_phdr_info* image, std::size_t, void* data) {
+        auto& collected = *static_cast<std::pair<std::map<std::uint64_t, Page>*, std::uint64_t>*>(data);
+        constexpr std::uint32_t readableFlag = 4;
+        for (int index = 0; index < image->dlpi_phnum; ++index) {
+            const auto& header = image->dlpi_phdr[index];
+            if (header.p_type != PT_LOAD || header.p_memsz == 0) continue;
+            const auto start = (image->dlpi_addr + header.p_vaddr) & ~(collected.second - 1);
+            const auto end = (image->dlpi_addr + header.p_vaddr + header.p_memsz + collected.second - 1) & ~(collected.second - 1);
+            for (auto page = start; page < end; page += collected.second) {
+                auto& entry = (*collected.first)[page];
+                entry.readable = entry.readable || (header.p_flags & (readableFlag | PF_W)) != 0;
+                entry.writable = entry.writable || (header.p_flags & PF_W) != 0;
+            }
+        }
+        return 1;
+    }, &collection);
+    if (pages.empty()) {
+        for (std::uint32_t image = 0; image < _dyld_image_count(); ++image) {
+            const auto* header = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(image));
+            if (header == nullptr || header->magic != MH_MAGIC_64 || header->filetype != MH_EXECUTE) continue;
+            const auto slide = static_cast<std::uint64_t>(_dyld_get_image_vmaddr_slide(image));
+            const auto* command = reinterpret_cast<const load_command*>(header + 1);
+            for (std::uint32_t index = 0; index < header->ncmds; ++index) {
+                if (command->cmd == LC_SEGMENT_64) {
+                    const auto* segment = reinterpret_cast<const segment_command_64*>(command);
+                    if (segment->vmsize != 0 && segment->initprot != 0 && segment->vmaddr <= std::numeric_limits<std::uint64_t>::max() - slide) {
+                        const auto start = (segment->vmaddr + slide) & ~(pageSize - 1);
+                        const auto end = (segment->vmaddr + slide + segment->vmsize + pageSize - 1) & ~(pageSize - 1);
+                        for (auto page = start; page < end; page += pageSize) {
+                            auto& entry = pages[page];
+                            entry.readable = entry.readable || (segment->initprot & (VM_PROT_READ | VM_PROT_WRITE)) != 0;
+                            entry.writable = entry.writable || (segment->initprot & VM_PROT_WRITE) != 0;
+                        }
+                    }
+                }
+                if (command->cmdsize < sizeof(load_command)) break;
+                command = reinterpret_cast<const load_command*>(reinterpret_cast<const std::uint8_t*>(command) + command->cmdsize);
+            }
+            break;
+        }
+    }
+    require(!pages.empty(), "main guest image has no loadable segments");
+    auto replacement = state.ranges;
+    for (auto page = pages.begin(); page != pages.end();) {
+        auto last = page;
+        while (std::next(last) != pages.end() && std::next(last)->first == last->first + pageSize && std::next(last)->second.readable == page->second.readable && std::next(last)->second.writable == page->second.writable) ++last;
+        const auto address = page->first;
+        const auto bytes = static_cast<std::size_t>(last->first + pageSize - address);
+        const auto next = replacement.lower_bound(address);
+        require(next == replacement.end() || address + bytes <= next->first, "guest image overlaps a registered allocation");
+        if (next != replacement.begin()) {
+            const auto& previous = *std::prev(next)->second;
+            require(previous.address + previous.bytes <= address, "guest image overlaps a registered allocation");
+        }
+        replacement.emplace(address, std::make_shared<const Range>(Range{address, bytes, page->second.readable, page->second.writable, address, bytes, false}));
+        page = std::next(last);
+    }
+    state.ranges.swap(replacement);
+    state.mainImageRegistered = true;
 }
 #endif
 

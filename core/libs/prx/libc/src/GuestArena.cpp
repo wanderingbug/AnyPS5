@@ -23,6 +23,11 @@
 #ifdef _WIN32
 #include <windows.h>
 #endif
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <unistd.h>
+#endif
 
 namespace GuestArena {
 namespace {
@@ -181,6 +186,8 @@ private:
         for (const auto& [holeStart, holeEnd] : _holes) _used.emplace(holeStart, holeEnd);
         _base = ArenaStart;
         _end = end;
+#elif defined(__APPLE__)
+        SeedAppleUsedRanges();
 #endif
     }
 
@@ -241,6 +248,90 @@ private:
             _used.emplace(from, to);
             _hostRegions.emplace_back(from, to);
         }
+    }
+#elif defined(__APPLE__)
+    static bool ReserveFixed(std::uintptr_t start, std::uintptr_t bytes) {
+        mach_vm_address_t address = start;
+        const kern_return_t allocated = mach_vm_allocate(mach_task_self(), &address, bytes, VM_FLAGS_FIXED);
+        if (allocated != KERN_SUCCESS || address != start) {
+            if (allocated == KERN_SUCCESS) mach_vm_deallocate(mach_task_self(), address, bytes);
+            return false;
+        }
+        if (mach_vm_protect(mach_task_self(), start, bytes, FALSE, VM_PROT_NONE) != KERN_SUCCESS) {
+            mach_vm_deallocate(mach_task_self(), start, bytes);
+            return false;
+        }
+        return true;
+    }
+
+    static void TryReserve(std::vector<std::pair<std::uintptr_t, std::uintptr_t>>& occupied, std::uintptr_t from, std::uintptr_t to) {
+        const auto page = static_cast<std::uintptr_t>(vm_page_size);
+        if (page == 0 || from >= to) return;
+        constexpr std::uintptr_t sizes[] = {std::uintptr_t{1} << 30, std::uintptr_t{64} << 20, std::uintptr_t{4} << 20, std::uintptr_t{256} << 10};
+        std::uintptr_t cursor = from;
+        int pageFailures = 0;
+        while (cursor < to) {
+            bool placed = false;
+            for (const auto size : sizes) {
+                if (size > to - cursor || (cursor & (page - 1)) != 0) continue;
+                if (!ReserveFixed(cursor, size)) continue;
+                cursor += size;
+                placed = true;
+                pageFailures = 0;
+                break;
+            }
+            if (placed) continue;
+            if ((cursor & (page - 1)) == 0 && page <= to - cursor && ReserveFixed(cursor, page)) {
+                cursor += page;
+                pageFailures = 0;
+                continue;
+            }
+            if (++pageFailures >= 4) {
+                occupied.emplace_back(cursor, to);
+                return;
+            }
+            const auto skip = std::min<std::uintptr_t>(page, to - cursor);
+            occupied.emplace_back(cursor, cursor + skip);
+            cursor += skip;
+        }
+    }
+
+    void SeedAppleUsedRanges() {
+        mach_vm_address_t address = ArenaStart;
+        while (address < ApplicationAreaEnd) {
+            mach_vm_size_t size = 0;
+            vm_region_basic_info_data_64_t info{};
+            mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+            mach_port_t object = MACH_PORT_NULL;
+            const kern_return_t result = mach_vm_region(mach_task_self(), &address, &size, VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&info), &count, &object);
+            if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+            if (result != KERN_SUCCESS || size == 0 || address >= ApplicationAreaEnd) break;
+            const auto begin = std::max<std::uintptr_t>(static_cast<std::uintptr_t>(address), ArenaStart);
+            const auto end = std::min<std::uintptr_t>(static_cast<std::uintptr_t>(address + size), ApplicationAreaEnd);
+            if (begin < end) {
+                _used.emplace(begin, end);
+                _hostRegions.emplace_back(begin, end);
+            }
+            if (address > std::numeric_limits<mach_vm_address_t>::max() - size) break;
+            address += size;
+        }
+        _used.emplace(SystemReservedStart, SystemReservedEnd);
+        _hostRegions.emplace_back(SystemReservedStart, SystemReservedEnd);
+        std::vector<std::pair<std::uintptr_t, std::uintptr_t>> occupied;
+        std::uintptr_t cursor = ArenaStart;
+        for (const auto& [usedStart, usedEnd] : _used) {
+            if (usedStart > ApplicationAreaEnd) break;
+            if (usedStart > cursor) TryReserve(occupied, cursor, std::min<std::uintptr_t>(usedStart, ApplicationAreaEnd));
+            if (usedEnd > cursor) cursor = usedEnd;
+            if (cursor >= ApplicationAreaEnd) break;
+        }
+        if (cursor < ApplicationAreaEnd) TryReserve(occupied, cursor, ApplicationAreaEnd);
+        for (const auto& [from, to] : occupied) {
+            _used.emplace(from, to);
+            _hostRegions.emplace_back(from, to);
+        }
+        _base = ArenaStart;
+        _end = ApplicationAreaEnd;
     }
 #endif
 
@@ -378,7 +469,7 @@ void GuestArenaUnmapAlias_nid_postfix(void* alias) {
 }
 #endif
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 namespace {
 int PosixProtection(std::uint32_t windowsProtection) {
     switch (windowsProtection) {
@@ -399,7 +490,7 @@ void* PlaceAt(void* pointer, std::size_t bytes, std::uint32_t protection) {
 }
 #endif
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 void GuestArenaSetProtection_nid_postfix(std::uintptr_t address, std::size_t bytes, std::uint32_t protection) {
     if (!Arena::Get().Contains(reinterpret_cast<void*>(address), bytes)) throw OutsideArena("set protection", reinterpret_cast<void*>(address), bytes);
     if (mprotect(reinterpret_cast<void*>(address), bytes, PosixProtection(protection)) != 0)
@@ -421,18 +512,6 @@ void GuestArenaCommit_nid_postfix(void* pointer, std::size_t bytes, std::uint32_
 void GuestArenaReset_nid_postfix(void* pointer, std::size_t bytes) {
     if (!Arena::Get().Contains(pointer, bytes)) throw OutsideArena("reset", pointer, bytes);
     if (PlaceAt(pointer, bytes, 0x01) == MAP_FAILED) throw std::system_error(errno, std::generic_category(), "guest arena reset failed");
-}
-#elif defined(__APPLE__)
-void GuestArenaSetProtection_nid_postfix(std::uintptr_t, std::size_t, std::uint32_t) {
-    throw std::runtime_error("TODO: macOS GuestArena::SetProtection is not implemented");
-}
-
-void GuestArenaCommit_nid_postfix(void*, std::size_t, std::uint32_t, std::size_t) {
-    throw std::runtime_error("TODO: macOS GuestArena::Commit is not implemented");
-}
-
-void GuestArenaReset_nid_postfix(void*, std::size_t) {
-    throw std::runtime_error("TODO: macOS GuestArena::Reset is not implemented");
 }
 #endif
 

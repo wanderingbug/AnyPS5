@@ -35,8 +35,26 @@
 #include <windows.h>
 #include <cwchar>
 #endif
+#ifdef __APPLE__
+#include <spawn.h>
+#include <sys/wait.h>
+extern char** environ;
+#endif
 
 namespace {
+
+#ifdef __APPLE__
+void AdHocSign(const std::filesystem::path& path) {
+    const auto utf8 = Io::Utf8Path(path);
+    pid_t child = 0;
+    char* arguments[] = {const_cast<char*>("codesign"), const_cast<char*>("--force"), const_cast<char*>("--sign"), const_cast<char*>("-"), const_cast<char*>(utf8.c_str()), nullptr};
+    if (const int spawned = posix_spawnp(&child, "codesign", nullptr, nullptr, arguments, environ); spawned != 0)
+        throw Domain::RelinkerException("cannot run codesign for " + utf8);
+    int status = 0;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+        throw Domain::RelinkerException("ad-hoc signature failed for " + utf8);
+}
+#endif
 
 int Run(const int argc, char* argv[]) {
     Cli::Args args;
@@ -172,9 +190,15 @@ int Run(const int argc, char* argv[]) {
         for (const auto& artifact : guestArtifacts) {
             std::filesystem::create_directories(artifact.Path.parent_path());
             fileWriter.Write(Io::Utf8Path(artifact.Path), artifact.Bytes);
+#ifdef __APPLE__
+            if (args.toMacos) AdHocSign(artifact.Path);
+#endif
             std::cout << "Guest module: " << Io::Utf8Path(artifact.Path) << '\n';
         }
         fileWriter.Write(absPath, executableBytes);
+#ifdef __APPLE__
+        if (args.toMacos) AdHocSign(absPath);
+#endif
         if (desktopEntry) std::cout << "Desktop entry: " << Io::Utf8Path(desktopEntryWriter.Write(*desktopEntry)) << '\n';
         std::cout << "External prx references: " << result.RegistryEntries.size() << "\nOutput file: " << absPath << '\n';
         std::cout << "Expected runtime layout (relative to the output executable):\n"
