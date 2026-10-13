@@ -381,12 +381,7 @@ void VideoOutDriver::Shutdown() {
         }
         stopped = true;
         std::lock_guard lock(flipQueue->mutex);
-        if (flipQueue->failure) {
-            try {
-                std::rethrow_exception(flipQueue->failure);
-            } catch (const ProcessShutdown&) {
-            }
-        }
+        if (flipQueue->failure) std::fprintf(stderr, "[videoout] presenter recorded a failure during shutdown\n");
         return;
     }
 #endif
