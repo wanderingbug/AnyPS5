@@ -133,7 +133,9 @@ GuestResolver::HostEntry* APS5_VABI gethostbyname_nid_postfix(const char* name) 
                 const auto* inet = reinterpret_cast<const sockaddr_in*>(info->ai_addr);
                 std::array<unsigned char, 4> bytes{};
                 std::memcpy(bytes.data(), &inet->sin_addr, sizeof(bytes));
-                resolved.push_back(bytes);
+                bool duplicate = false;
+                for (const auto& existing : resolved) duplicate = duplicate || existing == bytes;
+                if (!duplicate) resolved.push_back(bytes);
             }
             ::freeaddrinfo(result);
             if (resolved.empty()) {

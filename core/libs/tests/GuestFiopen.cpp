@@ -149,7 +149,7 @@ int main() {
     Require(stream != nullptr && std::fgetc(stream->GetHandle()) == 'k');
     fclose_nid_postfix(stream);
 
-#ifndef _WIN32
+#if defined(__linux__)
     auto* full = std::fopen("/dev/full", "wb");
     Require(full != nullptr);
     auto* fullStream = new FileStream(full, true);

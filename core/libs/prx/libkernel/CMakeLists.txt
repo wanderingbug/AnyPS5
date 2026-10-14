@@ -161,6 +161,9 @@ if(BUILD_TESTING)
         endif()
         add_test(NAME nid_patcher_dynamic_strings COMMAND ${Python3_EXECUTABLE}
             ${LIBS_INCLUDE_DIR}/nid/tests/test_dynamic_strings.py $<TARGET_FILE:guest_module_fixture>)
+        if(APPLE)
+            set_tests_properties(nid_patcher_dynamic_strings PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
         add_test(NAME nid_patcher_symbol_versions COMMAND ${Python3_EXECUTABLE}
             ${LIBS_INCLUDE_DIR}/nid/tests/test_symbol_versions.py $<TARGET_FILE:nid_patcher>)
     endif()

@@ -30,7 +30,13 @@ def dynamic_strings(image):
 
 
 def main():
-    entries = dynamic_strings(Path(sys.argv[1]).read_bytes())
+    image = Path(sys.argv[1]).read_bytes()
+    if len(image) >= 4 and image[:4] in (
+        b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe",
+        b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"):
+        print("skipped, macOS Mach-O has no ELF dynamic section")
+        raise SystemExit(77)
+    entries = dynamic_strings(image)
     runpaths = [value for tag, value in entries if tag in (DT_RPATH, DT_RUNPATH)]
     assert runpaths == ["$ORIGIN"], entries
     needed = [value for tag, value in entries if tag == DT_NEEDED]

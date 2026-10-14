@@ -97,7 +97,7 @@ DYLD_LIBRARY_PATH="$PWD/build/vulkan/lib" \
     ctest --test-dir build --output-on-failure --timeout 120 --parallel 4
 ```
 
-`ctest` runs under Rosetta. A test that returns 77 is skipped and prints the reason. GPU tests that construct `VulkanDevice` see MoltenVK through the variables above. Do not set `ANYPS5_REQUIRE_VULKAN`: a missing MoltenVK feature should skip, not fail the run. Fixtures that create their own Vulkan instance without `VK_KHR_portability_enumeration` do not see MoltenVK and skip with `no usable Vulkan device`. macOS CI (`.github/workflows/macos.yml`) configures `BUILD_TESTING=ON`, runs the address-space check, the guest smoke, the one-frame square, then `ctest`, and rejects a skip whose reason is neither a device limitation nor a named macOS gap.
+`ctest` runs under Rosetta. A test that returns 77 is skipped and prints the reason. GPU tests that construct `VulkanDevice` see MoltenVK through the variables above. Do not set `ANYPS5_REQUIRE_VULKAN`: a missing MoltenVK feature should skip, not fail the run. Fixtures that create their own Vulkan instance without `VK_KHR_portability_enumeration` do not see MoltenVK and skip with `no usable Vulkan device`. macOS CI (`.github/workflows/macos.yml`) configures `BUILD_TESTING=ON`, runs the address-space check, the guest smoke, the one-frame square, then `ctest`, and rejects a skip whose reason is neither a device limitation nor a named macOS gap. Tests that still fail for one of those gaps export `APS5_MACOS_SKIP` and return 77 before `main`; the names and reasons are in `cmake/MacosTestSkips.cmake`.
 
 ## CMake flags
 
