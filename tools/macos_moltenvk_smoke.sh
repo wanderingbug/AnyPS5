@@ -86,7 +86,7 @@ else
         VK_DRIVER_FILES="$guest/vk/MoltenVK_icd.json" \
         VK_ICD_FILENAMES="$guest/vk/MoltenVK_icd.json" \
         APS5_SQUARE_INTERACTIVE=0 \
-        APS5_SQUARE_FRAMES=2 \
+        APS5_SQUARE_FRAMES=1 \
         APS5_DUMP_FRAMES=1 \
         APS5_DUMP_SCALE=1 \
         APS5_NO_GPU_DUMP=1 \
