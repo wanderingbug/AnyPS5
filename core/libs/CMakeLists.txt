@@ -171,6 +171,16 @@ endforeach()
 add_custom_target(libs DEPENDS ${PATCHED_OUTPUTS})
 
 if(APPLE)
+    set(ANYPS5_APPLE_VULKAN_ARCH "${CMAKE_OSX_ARCHITECTURES}")
+    if(NOT ANYPS5_APPLE_VULKAN_ARCH)
+        set(ANYPS5_APPLE_VULKAN_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+    endif()
+    add_custom_target(apple_vulkan
+        COMMAND /bin/bash "${CMAKE_SOURCE_DIR}/tools/fetch_apple_vulkan.sh" "${CMAKE_BINARY_DIR}/vulkan" "${ANYPS5_APPLE_VULKAN_ARCH}"
+        COMMENT "Fetching MoltenVK and building the Vulkan loader"
+        VERBATIM
+    )
+    add_dependencies(libs apple_vulkan)
     add_executable(macos_address_space ${CMAKE_SOURCE_DIR}/tools/macos_address_space.cpp)
     set_target_properties(macos_address_space PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
     add_executable(macos_guest_thread_self EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/tests/GuestThreadSelf.cpp)

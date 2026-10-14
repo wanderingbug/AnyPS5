@@ -7,29 +7,25 @@ case $build in
     *) build=$root/$build ;;
 esac
 guest=$build/macos-square
-moltenvk_version=v1.4.2
-moltenvk_url=https://github.com/KhronosGroup/MoltenVK/releases/download/${moltenvk_version}/MoltenVK-macos.tar
-moltenvk_member=MoltenVK/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
+vulkan=$build/vulkan
+/bin/bash "$root/tools/fetch_apple_vulkan.sh" "$vulkan" x86_64
 rm -rf "$guest"
 mkdir -p "$guest/libs" "$guest/vk"
-if [ -n "${MOLTENVK_LIB:-}" ]; then
-    cp "$MOLTENVK_LIB" "$guest/vk/libMoltenVK.dylib"
-elif [ -f /usr/local/lib/libMoltenVK.dylib ]; then
-    cp /usr/local/lib/libMoltenVK.dylib "$guest/vk/libMoltenVK.dylib"
-    if [ -f /usr/local/lib/libvulkan.dylib ]; then
-        cp /usr/local/lib/libvulkan.dylib "$guest/vk/libvulkan.dylib"
-    fi
-else
-    archive=$guest/MoltenVK-macos.tar
-    package=$guest/vk-package
-    echo "downloading MoltenVK $moltenvk_version"
-    curl -fsSL --retry 3 -o "$archive" "$moltenvk_url"
-    echo "unpacking MoltenVK"
-    mkdir -p "$package"
-    tar -xf "$archive" -C "$package"
-    cp "$package/$moltenvk_member" "$guest/vk/libMoltenVK.dylib"
-    rm -rf "$package" "$archive"
-fi
+cp "$vulkan/lib/libMoltenVK.dylib" "$guest/vk/libMoltenVK.dylib"
+cp "$vulkan/lib/libvulkan.dylib" "$guest/vk/libvulkan.dylib"
+python3 - "$guest/vk/MoltenVK_icd.json" "$guest/vk/libMoltenVK.dylib" <<'PY'
+import json, sys
+with open(sys.argv[1], "w") as handle:
+    json.dump({
+        "file_format_version": "1.0.0",
+        "ICD": {
+            "library_path": sys.argv[2],
+            "api_version": "1.2.0",
+            "is_portability_driver": True,
+        },
+    }, handle, indent=2)
+    handle.write("\n")
+PY
 python3 - "$guest/vk/libMoltenVK.dylib" <<'PY'
 import struct, sys
 path = sys.argv[1]
@@ -62,6 +58,8 @@ echo "relinked square"
 cd "$guest"
 set +e
 DYLD_LIBRARY_PATH="$guest/vk${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
+    VK_DRIVER_FILES="$guest/vk/MoltenVK_icd.json" \
+    VK_ICD_FILENAMES="$guest/vk/MoltenVK_icd.json" \
     APS5_SQUARE_FRAMES=2 \
     APS5_DUMP_FRAMES=1 \
     APS5_DUMP_SCALE=1 \
@@ -96,7 +94,14 @@ def pixel(x, y):
 
 background = bytes((0x20, 0x18, 0x10, 0xFF))
 square = bytes((0x40, 0xE0, 0x40, 0xFF))
-checks = [(0, 0, background), (39, 30, background), (40, 30, square), (67, 57, square), (68, 30, background)]
+player = bytes((0xF0, 0x60, 0x20, 0xFF))
+coin = bytes((0x30, 0xD0, 0xF0, 0xFF))
+checks = [
+    (0, 0, background), (39, 30, background), (40, 30, square), (67, 57, square), (68, 30, background),
+    (200, 90, player), (211, 101, player), (212, 90, background),
+    (16, 150, coin), (23, 157, coin), (15, 150, background),
+    (260, 16, coin), (267, 23, coin), (268, 16, background),
+]
 for x, y, want in checks:
     got = pixel(x, y)
     if got != want:

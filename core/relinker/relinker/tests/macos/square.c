@@ -3,7 +3,6 @@
 
 char *getenv(const char *name);
 void exit(int status);
-void _Exit(int status);
 int puts(const char *text);
 int sceVideoOutOpen(int userId, int busType, int index, const void *param);
 void sceVideoOutSetBufferAttribute2(void *attribute, uint64_t pixelFormat, uint32_t tilingMode, uint32_t width, uint32_t height, uint64_t option, uint32_t dccControl, uint64_t dccClear);
@@ -16,7 +15,11 @@ int scePadRead(int handle, void *data, int count);
 int sceAudioOutOpen(int userId, int type, int index, uint32_t len, uint32_t freq, uint32_t param);
 int sceAudioOutOutput(int handle, const void *ptr);
 
-enum { SquareWidth = 320, SquareHeight = 180, SquareSize = 28, SquareFramesDefault = 180 };
+enum {
+    SquareWidth = 320, SquareHeight = 180, SquareSize = 28, SquareFramesDefault = 180,
+    PlayerX = 200, PlayerY = 90, PlayerSize = 12,
+    CoinSize = 8
+};
 
 static _Alignas(65536) uint8_t square_pixels[262144];
 
@@ -37,19 +40,35 @@ static int square_frames(const char *text) {
     return value > 0 ? value : SquareFramesDefault;
 }
 
-static void paint(uint8_t *pixels, int originX, int originY) {
+static void fill(uint8_t *pixels, int originX, int originY, int wide, int high, uint8_t blue, uint8_t green, uint8_t red) {
     int y;
-    for (y = 0; y < SquareHeight; ++y) {
+    for (y = 0; y < high; ++y) {
         int x;
-        for (x = 0; x < SquareWidth; ++x) {
-            uint8_t *pixel = pixels + ((size_t)y * SquareWidth + (size_t)x) * 4u;
-            int inside = x >= originX && x < originX + SquareSize && y >= originY && y < originY + SquareSize;
-            pixel[0] = inside ? 0x40 : 0x20;
-            pixel[1] = inside ? 0xe0 : 0x18;
-            pixel[2] = inside ? 0x40 : 0x10;
+        int row = originY + y;
+        if (row < 0 || row >= SquareHeight) continue;
+        for (x = 0; x < wide; ++x) {
+            int column = originX + x;
+            uint8_t *pixel;
+            if (column < 0 || column >= SquareWidth) continue;
+            pixel = pixels + ((size_t)row * SquareWidth + (size_t)column) * 4u;
+            pixel[0] = blue;
+            pixel[1] = green;
+            pixel[2] = red;
             pixel[3] = 0xff;
         }
     }
+}
+
+static int overlaps(int ax, int ay, int aw, int ah, int bx, int by, int bw, int bh) {
+    return ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah;
+}
+
+static void paint(uint8_t *pixels, int originX, int originY, int playerX, int playerY, int coinA, int coinB) {
+    fill(pixels, 0, 0, SquareWidth, SquareHeight, 0x20, 0x18, 0x10);
+    if (coinA) fill(pixels, 16, 150, CoinSize, CoinSize, 0x30, 0xd0, 0xf0);
+    if (coinB) fill(pixels, 260, 16, CoinSize, CoinSize, 0x30, 0xd0, 0xf0);
+    fill(pixels, originX, originY, SquareSize, SquareSize, 0x40, 0xe0, 0x40);
+    fill(pixels, playerX, playerY, PlayerSize, PlayerSize, 0xf0, 0x60, 0x20);
 }
 
 static void tone(int16_t *samples) {
@@ -75,6 +94,10 @@ void guest_start(void *stack, void *unused) {
     int y = 30;
     int dx = 3;
     int dy = 2;
+    int playerX = PlayerX;
+    int playerY = PlayerY;
+    int coinA = 1;
+    int coinB = 1;
     int frame;
     int index;
     (void)stack;
@@ -102,12 +125,27 @@ void guest_start(void *stack, void *unused) {
         if (pad >= 0 && scePadRead(pad, padData, 1) > 0) {
             int stickX = padData[4];
             int stickY = padData[5];
+            uint32_t buttons = (uint32_t)padData[0] | ((uint32_t)padData[1] << 8) | ((uint32_t)padData[2] << 16) | ((uint32_t)padData[3] << 24);
             if (stickX < 100) dx = -3;
             else if (stickX > 156) dx = 3;
             if (stickY < 100) dy = -2;
             else if (stickY > 156) dy = 2;
+            if (stickX < 100) playerX -= 3;
+            else if (stickX > 156) playerX += 3;
+            if (stickY < 100) playerY -= 2;
+            else if (stickY > 156) playerY += 2;
+            if (playerX < 0) playerX = 0;
+            if (playerY < 0) playerY = 0;
+            if (playerX > SquareWidth - PlayerSize) playerX = SquareWidth - PlayerSize;
+            if (playerY > SquareHeight - PlayerSize) playerY = SquareHeight - PlayerSize;
+            if ((buttons & 0x4000u) != 0) {
+                coinA = 0;
+                coinB = 0;
+            }
         }
-        paint(pixels, x, y);
+        if (coinA && overlaps(x, y, SquareSize, SquareSize, 16, 150, CoinSize, CoinSize)) coinA = 0;
+        if (coinB && overlaps(x, y, SquareSize, SquareSize, 260, 16, CoinSize, CoinSize)) coinB = 0;
+        paint(pixels, x, y, playerX, playerY, coinA, coinB);
         if (sceVideoOutSubmitFlip(video, 0, 1, frame) != 0) {
             puts("square flip failed");
             exit(1);
@@ -129,5 +167,5 @@ void guest_start(void *stack, void *unused) {
         }
     }
     puts("square presented");
-    _Exit(0);
+    exit(0);
 }
