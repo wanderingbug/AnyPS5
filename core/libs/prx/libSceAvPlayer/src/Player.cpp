@@ -368,9 +368,22 @@ bool Player::GetAudioData(AvPlayerFrameInfo& info) {
 }
 
 bool Player::IsActive() {
+    const auto inactive = [this] {
+        return !source || state == State::Initial || state == State::Stop || state == State::EndOfFile || state == State::Error;
+    };
+    {
+        std::lock_guard lock(mutex);
+        if (inactive()) return false;
+        if (!source->Finished()) return true;
+    }
+#ifdef __APPLE__
+    checkEndOfFile();
     std::lock_guard lock(mutex);
-    if (!source || state == State::Initial || state == State::Stop || state == State::EndOfFile || state == State::Error) return false;
+    if (inactive()) return false;
     return !source->Finished();
+#else
+    return false;
+#endif
 }
 
 std::uint64_t Player::CurrentTime() {

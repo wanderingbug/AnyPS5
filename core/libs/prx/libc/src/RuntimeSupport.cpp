@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstdint>
 #include <iterator>
@@ -22,6 +23,20 @@
 #include "prx/libc/include/HostEntropy.hpp"
 
 namespace {
+
+template<typename T>
+T HostInteger(const char* str, char** endptr, int base, T (*parse)(const char*, char**, int)) {
+    const int saved = errno;
+    char* localEnd = nullptr;
+    char** end = endptr != nullptr ? endptr : &localEnd;
+    const T value = parse(str, end, base);
+#ifdef __APPLE__
+    if (errno == EINVAL && *end == str && (base == 0 || (base >= 2 && base <= 36))) errno = saved;
+#else
+    (void)saved;
+#endif
+    return value;
+}
 
 std::recursive_mutex g_sysLock;
 
@@ -114,12 +129,12 @@ unsigned int APS5_VABI _Atomic_load_4_nid_postfix(volatile unsigned int* target,
 
 std::intmax_t APS5_VABI strtoimax_nid_postfix(const char* str, char** endptr, int base) {
     if (StopAtPrefixLetter_nid_no_patch(str, endptr, base)) return 0;
-    return std::strtoimax(str, endptr, base);
+    return HostInteger(str, endptr, base, std::strtoimax);
 }
 
 std::uintmax_t APS5_VABI strtoumax_nid_postfix(const char* str, char** endptr, int base) {
     if (StopAtPrefixLetter_nid_no_patch(str, endptr, base)) return 0;
-    return std::strtoumax(str, endptr, base);
+    return HostInteger(str, endptr, base, std::strtoumax);
 }
 
 unsigned int APS5_VABI _ZSt14_Random_devicev_nid_postfix() {

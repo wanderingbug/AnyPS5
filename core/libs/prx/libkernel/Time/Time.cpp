@@ -28,6 +28,10 @@
 #include <sys/times.h>
 #include <unistd.h>
 #endif
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <sys/resource.h>
+#endif
 
 extern "C" int* APS5_VABI __error_nid_postfix();
 
@@ -425,11 +429,37 @@ int APS5_VABI clock_gettime_nid_postfix(int clockId, KernelTimespec* tp) {
             nativeId = CLOCK_MONOTONIC;
             break;
         case 14:
-            nativeId = CLOCK_THREAD_CPUTIME_ID;
-            break;
         case 15:
-            nativeId = CLOCK_PROCESS_CPUTIME_ID;
+#ifdef __APPLE__
+            {
+                std::uint64_t nanos = 0;
+                if (clockId == 14) {
+                    thread_basic_info info{};
+                    mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+                    if (thread_info(mach_thread_self(), THREAD_BASIC_INFO, reinterpret_cast<thread_info_t>(&info), &count) != KERN_SUCCESS) {
+                        errno = EINVAL;
+                        return -1;
+                    }
+                    const auto ticks = [](time_value_t time) {
+                        return static_cast<std::uint64_t>(time.seconds) * 1000000000ULL + static_cast<std::uint64_t>(time.microseconds) * 1000ULL;
+                    };
+                    nanos = ticks(info.user_time) + ticks(info.system_time);
+                } else {
+                    struct rusage usage{};
+                    if (getrusage(RUSAGE_SELF, &usage) != 0) return -1;
+                    const auto ticks = [](const timeval& time) {
+                        return static_cast<std::uint64_t>(time.tv_sec) * 1000000000ULL + static_cast<std::uint64_t>(time.tv_usec) * 1000ULL;
+                    };
+                    nanos = ticks(usage.ru_utime) + ticks(usage.ru_stime);
+                }
+                tp->tv_sec = static_cast<std::int64_t>(nanos / 1000000000ULL);
+                tp->tv_nsec = static_cast<std::int64_t>(nanos % 1000000000ULL);
+                return 0;
+            }
+#else
+            nativeId = clockId == 14 ? CLOCK_THREAD_CPUTIME_ID : CLOCK_PROCESS_CPUTIME_ID;
             break;
+#endif
         default:
             throw std::runtime_error(std::string(__func__) + ": unsupported clock_id " + std::to_string(clockId));
     }
