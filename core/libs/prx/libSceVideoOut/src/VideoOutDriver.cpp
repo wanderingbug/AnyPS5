@@ -28,8 +28,17 @@
 #include "prx/libc/include/Shutdown.hpp"
 #ifdef __APPLE__
 #include <unistd.h>
+#include <CoreFoundation/CoreFoundation.h>
 extern "C" bool Aps5MainThreadIsServing_nid_no_patch();
 extern "C" void Aps5PostMainThreadJob_nid_no_patch(void (*job)(void*), void* context);
+
+// HIDAPI schedules its IOHIDManager on this thread's default mode, and
+// GameController.framework delivers pad values the same way. SDL_PollEvent's
+// zero-date Cocoa pump does not run that mode.
+static void drainPresenterRunLoop() {
+    while (CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0, true) == kCFRunLoopRunHandledSource) {
+    }
+}
 #endif
 
 namespace {
@@ -43,6 +52,11 @@ void require(bool condition, const char* reason) {
 
 void initPresentationSubsystem() {
     SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+#ifdef __APPLE__
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4, "0");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5, "0");
+#endif
     if (SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
         throw std::runtime_error(std::string("SDL_InitSubSystem(VIDEO | GAMECONTROLLER) failed: ") + SDL_GetError());
     }
@@ -658,6 +672,9 @@ void VideoOutDriver::presentLoop(std::stop_token token, std::promise<void>& star
 #if APS5_ENABLE_TIMING_LOG
         timingLog = std::make_unique<FrameTimingLog>();
 #endif
+#ifdef __APPLE__
+        drainPresenterRunLoop();
+#endif
         PadInput padInput;
         MouseInput mouseInput;
         KeyboardInput keyboardInput;
@@ -673,6 +690,9 @@ void VideoOutDriver::presentLoop(std::stop_token token, std::promise<void>& star
                 }
             }
 
+#ifdef __APPLE__
+            drainPresenterRunLoop();
+#endif
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_QUIT) {

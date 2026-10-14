@@ -38,6 +38,10 @@ private:
     bool mouseEnabled = false;
     SDL_GameController* controller = nullptr;
     PadInputState controllerState{};
+    bool loggedState = false;
+    std::uint32_t loggedButtons = 0;
+    std::array<std::uint8_t, 4> loggedSticks{};
+    std::array<int, 4> loggedAxes{};
     std::uint32_t outputSequence = 0;
     PadOutputState outputState{};
     bool outputPending = false;

@@ -71,6 +71,7 @@ void PadInput::closeController() {
     SDL_GameControllerClose(controller);
     controller = nullptr;
     controllerState = {};
+    loggedState = false;
 }
 
 void PadInput::applyOutput() {
@@ -265,6 +266,23 @@ void PadInput::Update() {
     applyOutput();
     if (controller != nullptr) {
         controllerState = sampleController();
+        const int axes[4] = {
+            SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTX),
+            SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTY),
+            SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_RIGHTX),
+            SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_RIGHTY),
+        };
+        const bool changed = !loggedState || controllerState.buttons != loggedButtons || controllerState.sticks != loggedSticks
+            || axes[0] != loggedAxes[0] || axes[1] != loggedAxes[1] || axes[2] != loggedAxes[2] || axes[3] != loggedAxes[3];
+        if (changed) {
+            loggedState = true;
+            loggedButtons = controllerState.buttons;
+            loggedSticks = controllerState.sticks;
+            loggedAxes = {axes[0], axes[1], axes[2], axes[3]};
+            APS5_LOG_OUT("Pad: state buttons=%08x sticks=%u,%u,%u,%u axes=%d,%d,%d,%d",
+                controllerState.buttons, controllerState.sticks[0], controllerState.sticks[1], controllerState.sticks[2], controllerState.sticks[3],
+                axes[0], axes[1], axes[2], axes[3]);
+        }
         publish();
     }
     const auto now = std::chrono::steady_clock::now();
