@@ -74,7 +74,7 @@ The `--skip-sce-module`, `--exclude-sce-module <file>`, `--skip-syscall-check`, 
 Paths are relative to the output executable:
 
 ```text
-app.elf (Linux) or app.exe (Windows)
+app.elf (Linux), app.exe (Windows), or eboot (macOS)
 libs/
     *.prx
 app0/
@@ -105,6 +105,19 @@ Windows PowerShell:
 ```powershell
 .\app.exe
 ```
+
+macOS:
+
+`relinker --macos` writes an x86-64 Mach-O `eboot` and, when the relinker itself is running on macOS, ad-hoc signs it. On Apple silicon that executable runs under Rosetta 2. Copy the x86-64 libraries from `build/core/libs/libs/*.prx` into `libs/` beside `eboot`. The `libs` target also downloads MoltenVK 1.4.2 and builds an x86-64 Vulkan loader into `build/vulkan`. The process loads `libvulkan.dylib` from `DYLD_LIBRARY_PATH`, and the loader reads `VK_DRIVER_FILES`.
+
+```sh
+DYLD_LIBRARY_PATH="$PWD/build/vulkan/lib" \
+    VK_DRIVER_FILES="$PWD/build/vulkan/share/vulkan/icd.d/MoltenVK_icd.json" \
+    VK_ICD_FILENAMES="$PWD/build/vulkan/share/vulkan/icd.d/MoltenVK_icd.json" \
+    ./eboot
+```
+
+PlayStation 4 and PlayStation 5 controllers are opened through GameController.framework. Set `APS5_PAD_DEBUG=1` before launch to print each change of the button mask, the four stick bytes and the four SDL axes as `Pad: state`. An unset variable leaves that log off. `tools/macos_moltenvk_smoke.sh --interactive build` is the repository square: the left stick moves the player, Cross clears both coins, a tone plays, and Escape or Options closes the window. Without those keys it stays open for 30 seconds. x86-64 Homebrew is not used; an arm64 MoltenVK will not load into this process. Build steps are in [BUILD.md](../dev/BUILD.md).
 
 ### Controller input for test runs
 

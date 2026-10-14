@@ -177,7 +177,7 @@ template<class TAction> void fails(TAction&& fn) {
     require(failed, "invalid write was accepted");
 }
 
-#ifndef _WIN32
+#if defined(__linux__)
 std::size_t directMappings() {
     std::ifstream maps("/proc/self/maps");
     require(maps.is_open(), "cannot inspect mapping lifetimes");
@@ -273,12 +273,12 @@ int main(int argc, char** argv) {
         else if (argc == 2 && std::string_view(argv[1]) == "--benchmark-fallback") benchmark(false, false);
         else if (argc == 2 && std::string_view(argv[1]) == "--benchmark-labels-fallback") benchmark(true, false);
         else {
-#ifndef _WIN32
+#if defined(__linux__)
             const auto before = directMappings();
 #endif
             run();
             smallStores();
-#ifndef _WIN32
+#if defined(__linux__)
             require(directMappings() == before, "physical backing write views leaked");
 #endif
             std::cout << "Shared backing write tests passed\n";

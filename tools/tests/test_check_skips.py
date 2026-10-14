@@ -59,6 +59,21 @@ class CheckSkipsTests(unittest.TestCase):
         self.assertIn("error: odd skipped", result.stdout)
         self.assertNotIn("error: geometry skipped", result.stdout)
 
+    def test_macos_accepts_a_named_gap_and_rejects_an_unnamed_skip(self):
+        xml = (
+            '<testsuites><testsuite>'
+            '<testcase name="portability"><skipped/><system-out>skipped, MoltenVK has no portability subset bit this draw needs</system-out></testcase>'
+            '<testcase name="odd"><skipped/><system-out>skipped, flaky</system-out></testcase>'
+            '</testsuite></testsuites>'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            junit = Path(directory) / "junit.xml"
+            junit.write_text(xml, encoding="utf-8")
+            result = subprocess.run([sys.executable, "-I", str(TOOL), str(junit), "--job", "macos"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("error: odd skipped", result.stdout)
+        self.assertNotIn("error: portability skipped", result.stdout)
+
 
 
 

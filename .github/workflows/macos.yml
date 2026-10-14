@@ -14,15 +14,20 @@ concurrency:
 jobs:
   macos:
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: true
       - name: Install CMake and Ninja
         run: brew install cmake ninja
+      - uses: hendrikmuhs/ccache-action@v1.2.24
+        with:
+          key: macos-x64
       - name: Configure the x86-64 build
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DCMAKE_OSX_ARCHITECTURES=x86_64
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Check that every test executable is registered with ctest
+        run: python3 tools/check_test_registration.py build
       - name: Build
         run: cmake --build build --parallel
       - name: Measure the Rosetta guest address space
@@ -43,7 +48,16 @@ jobs:
       - name: Show the MoltenVK square log
         if: always()
         run: cat moltenvk-square.log
-      - name: Upload the square frame
+      - name: Run the guest and unit tests
+        timeout-minutes: 90
+        env:
+          VK_DRIVER_FILES: ${{ github.workspace }}/build/vulkan/share/vulkan/icd.d/MoltenVK_icd.json
+          VK_ICD_FILENAMES: ${{ github.workspace }}/build/vulkan/share/vulkan/icd.d/MoltenVK_icd.json
+          DYLD_LIBRARY_PATH: ${{ github.workspace }}/build/vulkan/lib
+        run: ctest --test-dir build --output-on-failure --timeout 120 --parallel 4 --output-log ctest.log --output-junit build/ctest.xml
+      - name: Check that every skip names a device limitation or a macOS gap
+        run: python3 tools/check_skips.py build/ctest.xml --job macos --list && python3 tools/check_skips.py build/ctest.xml --job macos
+      - name: Upload the square frame and the test log
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -51,4 +65,6 @@ jobs:
           path: |
             moltenvk-square.log
             build/macos-square/frame_000.bmp
+            ctest.log
+            build/ctest.xml
           if-no-files-found: ignore

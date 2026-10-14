@@ -7,6 +7,8 @@ DEVICE_LIMITATION = re.compile(r"skipped,.*(subgroup|the device (has no|reports|
 
 NO_DISPLAY = re.compile(r"skipped,.*no display", re.IGNORECASE)
 
+MACOS_GAP = re.compile(r"skipped,.*(macOS|MoltenVK|Rosetta|portability)", re.IGNORECASE)
+
 WINDOWS_PREFIX = "agc"
 
 
@@ -26,7 +28,7 @@ def skips(path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="fail when a test is skipped that the job's device is not expected to skip")
     parser.add_argument("junit", type=Path, help="the file written by ctest --output-junit")
-    parser.add_argument("--job", choices=("linux", "windows"), default="linux")
+    parser.add_argument("--job", choices=("linux", "windows", "macos"), default="linux")
     parser.add_argument("--list", action="store_true", help="print the skipped tests and why the file says they skipped")
     args = parser.parse_args()
     try:
@@ -41,6 +43,9 @@ if __name__ == "__main__":
     if args.job == "windows":
         unexpected = [name for name, output in found if not name.startswith(WINDOWS_PREFIX) and not NO_DISPLAY.search(output)]
         expected = f"any {WINDOWS_PREFIX}* test, which the runner has no Vulkan driver for, or a test that reports no display or Vulkan device"
+    elif args.job == "macos":
+        unexpected = [name for name, output in found if not DEVICE_LIMITATION.search(output) and not MACOS_GAP.search(output)]
+        expected = "a device limitation, or a skip that names macOS, MoltenVK, Rosetta or portability"
     else:
         unexpected = [name for name, output in found if not DEVICE_LIMITATION.search(output)]
         expected = "any test that reports the device limitation it needs, such as narrow subgroups, a missing extension or no display for a Vulkan window"
