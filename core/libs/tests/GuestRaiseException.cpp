@@ -107,8 +107,13 @@ static_assert(offsetof(SpinState, r12) == 8 && offsetof(SpinState, xmm8) == 16 &
 
 extern "C" void APS5_VABI RaiseTestSpinUntilR12(SpinState* state);
 asm(".text\n"
+#ifdef __APPLE__
+    ".globl _RaiseTestSpinUntilR12\n"
+    "_RaiseTestSpinUntilR12:\n"
+#else
     ".globl RaiseTestSpinUntilR12\n"
     "RaiseTestSpinUntilR12:\n"
+#endif
     "    pushq %r12\n"
     "    pushq %r13\n"
     "    subq $8, %rsp\n"
