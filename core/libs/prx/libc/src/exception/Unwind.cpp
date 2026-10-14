@@ -16,8 +16,8 @@
 #include <vector>
 #endif
 #ifdef __APPLE__
+#include <cstdio>
 #include <dlfcn.h>
-#include <mach-o/getsect.h>
 #include <mach-o/loader.h>
 #endif
 
@@ -27,6 +27,35 @@ extern "C" _Unwind_Reason_Code __gxx_personality_v0(int, _Unwind_Action, std::ui
 extern "C" _Unwind_Reason_Code __gcc_personality_v0(int, _Unwind_Action, std::uint64_t, _Unwind_Exception*, _Unwind_Context*);
 
 namespace LibcUnwind {
+#ifdef __APPLE__
+struct Miss { const char* why; Word pc; std::uint32_t encoding; Word personality; };
+thread_local Miss miss {"compact", 0, 0, 0};
+
+void Remember(const char* why, Word pc, std::uint32_t encoding = 0, Word personality = 0) {
+    miss = {why, pc, encoding, personality};
+}
+
+void LogMiss() {
+    Dl_info image {};
+    const char* name = "-";
+    if (dladdr(reinterpret_cast<void*>(miss.pc), &image) && image.dli_sname) name = image.dli_sname;
+    std::fprintf(stderr, "[libc] unwind miss %s pc=%p %s enc=%08x personality=%p\n", miss.why, reinterpret_cast<void*>(miss.pc), name, miss.encoding, reinterpret_cast<void*>(miss.personality));
+    std::fflush(stderr);
+}
+
+Word ResolveStub(Word personality) {
+    if (!personality) return 0;
+    const auto* code = reinterpret_cast<const Byte*>(personality);
+    if (code[0] != 0xff || code[1] != 0x25) return personality;
+    std::int32_t displacement = 0;
+    std::memcpy(&displacement, code + 2, 4);
+    const auto slot = static_cast<Word>(static_cast<std::intptr_t>(personality) + 6 + displacement);
+    Word target = 0;
+    std::memcpy(&target, reinterpret_cast<const void*>(slot), sizeof(target));
+    return target ? target : personality;
+}
+#endif
+
 _Unwind_Reason_Code CallPersonality(Word personality, _Unwind_Action actions, _Unwind_Exception* exception, _Unwind_Context* context) {
 #ifdef _WIN32
     const auto* code = reinterpret_cast<const Byte*>(personality);
@@ -41,19 +70,27 @@ _Unwind_Reason_Code CallPersonality(Word personality, _Unwind_Action actions, _U
     if (personality == reinterpret_cast<Word>(__gcc_personality_v0_nid_postfix) || personality == reinterpret_cast<Word>(__gcc_personality_v0))
         return __gcc_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
 #ifdef __APPLE__
+    personality = ResolveStub(personality);
+    if (personality == reinterpret_cast<Word>(__gxx_personality_v0_nid_postfix) || personality == reinterpret_cast<Word>(__gxx_personality_v0))
+        return __gxx_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
+    if (personality == reinterpret_cast<Word>(__gcc_personality_v0_nid_postfix) || personality == reinterpret_cast<Word>(__gcc_personality_v0))
+        return __gcc_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
     Dl_info info {};
-    if (dladdr(reinterpret_cast<void*>(personality), &info) && info.dli_sname) {
-        if (std::strstr(info.dli_sname, "gxx_personality_v0"))
-            return __gxx_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
-        if (std::strstr(info.dli_sname, "gcc_personality_v0"))
-            return __gcc_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
-    }
+    const char* name = nullptr;
+    if (dladdr(reinterpret_cast<void*>(personality), &info)) name = info.dli_sname;
+    if (name && std::strstr(name, "gcc_personality_v0"))
+        return __gcc_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
+    if (name && std::strstr(name, "objc")) return _URC_CONTINUE_UNWIND;
+    if (!name || std::strstr(name, "personality"))
+        return __gxx_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
+    Remember("personality", miss.pc, miss.encoding, personality);
+    return _URC_CONTINUE_UNWIND;
 #endif
     return (actions & _UA_SEARCH_PHASE) ? _URC_FATAL_PHASE1_ERROR : _URC_FATAL_PHASE2_ERROR;
 }
 struct Lookup { Word pc; const Byte* fde {}; Word text {}; Word data {}; };
 
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__)
 int FindFrame(dl_phdr_info* info, std::size_t, void* argument) {
     auto& query = *static_cast<Lookup*>(argument);
     const Byte* header = nullptr;
@@ -207,6 +244,39 @@ const FrameIndex& IndexFrames(const ImageKey& key, const Byte* begin, const Byte
 #endif
 
 #ifdef __APPLE__
+struct AppleSections { Word base {}; const Byte* unwind {}; unsigned long unwindSize {}; const Byte* eh {}; unsigned long ehSize {}; };
+
+bool AppleSectionsOf(Word pc, AppleSections& out) {
+    Dl_info image {};
+    if (!dladdr(reinterpret_cast<void*>(pc), &image) || !image.dli_fbase) return false;
+    const auto* header = static_cast<const mach_header_64*>(image.dli_fbase);
+    if (header->magic != MH_MAGIC_64) return false;
+    out.base = reinterpret_cast<Word>(header);
+    const Byte* command = reinterpret_cast<const Byte*>(header + 1);
+    Word slide = 0;
+    for (std::uint32_t index = 0; index < header->ncmds; ++index) {
+        const auto* load = reinterpret_cast<const load_command*>(command);
+        if (load->cmdsize < 8 || command + load->cmdsize < command) return false;
+        if (load->cmd == LC_SEGMENT_64) {
+            const auto* segment = reinterpret_cast<const segment_command_64*>(load);
+            if (std::strcmp(segment->segname, "__TEXT") == 0) slide = out.base - static_cast<Word>(segment->vmaddr);
+            const auto* section = reinterpret_cast<const section_64*>(segment + 1);
+            for (std::uint32_t part = 0; part < segment->nsects; ++part, ++section) {
+                const auto* address = reinterpret_cast<const Byte*>(static_cast<Word>(section->addr) + slide);
+                if (std::strncmp(section->sectname, "__unwind_info", 16) == 0) {
+                    out.unwind = address;
+                    out.unwindSize = static_cast<unsigned long>(section->size);
+                } else if (std::strncmp(section->sectname, "__eh_frame", 16) == 0) {
+                    out.eh = address;
+                    out.ehSize = static_cast<unsigned long>(section->size);
+                }
+            }
+        }
+        command += load->cmdsize;
+    }
+    return out.unwind != nullptr;
+}
+
 std::uint32_t Section32(const Byte* data, unsigned long size, unsigned long offset, bool& ok) {
     std::uint32_t value = 0;
     if (!ok || offset > size || size - offset < 4) { ok = false; return 0; }
@@ -215,12 +285,13 @@ std::uint32_t Section32(const Byte* data, unsigned long size, unsigned long offs
 }
 
 bool AppleCompact(_Unwind_Context& context, Frame& frame, Lookup& query) {
-    Dl_info image {};
-    if (!dladdr(reinterpret_cast<void*>(query.pc), &image) || !image.dli_fbase) return false;
-    const auto base = reinterpret_cast<Word>(image.dli_fbase);
+    Remember("compact", query.pc);
+    AppleSections sections {};
+    if (!AppleSectionsOf(query.pc, sections)) return false;
+    const auto base = sections.base;
     if (query.pc < base) return false;
-    unsigned long infoSize = 0;
-    const auto* info = getsectiondata(static_cast<const mach_header_64*>(image.dli_fbase), "__TEXT", "__unwind_info", &infoSize);
+    const auto* info = sections.unwind;
+    const auto infoSize = sections.unwindSize;
     if (!info || infoSize < 28) return false;
     bool ok = true;
     if (Section32(info, infoSize, 0, ok) != 1 || !ok) return false;
@@ -342,22 +413,56 @@ bool AppleCompact(_Unwind_Context& context, Frame& frame, Lookup& query) {
         const auto slot = static_cast<Word>(static_cast<std::intptr_t>(base) + delta);
         std::memcpy(&personality, reinterpret_cast<const void*>(slot), sizeof(personality));
     }
+    miss.encoding = encoding;
+    miss.personality = personality;
     if ((encoding & 0x0f000000u) == 0x04000000u) {
-        unsigned long ehSize = 0;
-        const auto* eh = getsectiondata(static_cast<const mach_header_64*>(image.dli_fbase), "__TEXT", "__eh_frame", &ehSize);
         const auto ehOffset = encoding & 0x00ffffffu;
-        if (!eh || ehOffset >= ehSize) return false;
-        query.fde = eh + ehOffset;
-        query.text = base;
-        query.data = base;
+        if (sections.eh && ehOffset < sections.ehSize) {
+            query.fde = sections.eh + ehOffset;
+            query.text = base;
+            query.data = base;
+            Frame decoded {};
+            if (DecodeCandidate(context, decoded, query)) {
+                frame = decoded;
+                return true;
+            }
+        }
+        query.fde = nullptr;
         frame = {};
-        return DecodeCandidate(context, frame, query);
+        frame.useCompact = true;
+        frame.compactEncoding = 0x01000000u;
+        frame.functionStart = funcStart;
+        frame.personality = personality;
+        frame.lsda = lsda;
+        frame.returnRegister = 16;
+        context.region = funcStart;
+        context.lsda = lsda;
+        context.personality = personality;
+        context.textBase = base;
+        context.dataBase = base;
+        return true;
     }
-    if ((encoding & 0x0f000000u) == 0) return false;
+    if ((encoding & 0x0f000000u) == 0) {
+        frame = {};
+        frame.useCompact = true;
+        frame.compactEncoding = 0;
+        frame.functionStart = funcStart;
+        frame.personality = personality;
+        frame.lsda = lsda;
+        frame.returnRegister = 16;
+        context.region = funcStart;
+        context.lsda = lsda;
+        context.personality = personality;
+        context.textBase = base;
+        context.dataBase = base;
+        return true;
+    }
     frame = {};
     frame.useCompact = true;
     frame.compactEncoding = encoding;
     frame.functionStart = funcStart;
+    frame.personality = personality;
+    frame.lsda = lsda;
     frame.returnRegister = 16;
     context.region = funcStart;
     context.lsda = lsda;
@@ -370,33 +475,31 @@ bool AppleCompact(_Unwind_Context& context, Frame& frame, Lookup& query) {
 
 bool DecodeFrame(_Unwind_Context& context, Frame& frame) {
     Lookup query {context.registers[16] - !context.signalFrame};
-#if defined(__linux__) || defined(__APPLE__)
-    dl_iterate_phdr(FindFrame, &query);
 #ifdef __APPLE__
-    if (!query.fde && AppleCompact(context, frame, query)) return true;
-    if (!query.fde) {
-        Dl_info image {};
-        if (!dladdr(reinterpret_cast<void*>(query.pc), &image) || !image.dli_fbase) return false;
-        unsigned long size = 0;
-        const Byte* p = getsectiondata(static_cast<const mach_header_64*>(image.dli_fbase), "__TEXT", "__eh_frame", &size);
-        if (!p) return false;
-        const Byte* end = p + size;
-        while (end - p >= 8) {
-            const Byte* record = p;
-            const auto length = Read<std::uint32_t>(p);
-            if (length == 0) return false;
-            if (length == 0xffffffff || length < 4 || Word(end - p) < length) return false;
-            const Byte* next = p + length;
-            if (Read<std::uint32_t>(p)) {
-                query.fde = record;
-                frame = {};
-                if (DecodeCandidate(context, frame, query)) return true;
-            }
-            p = next;
+    if (AppleCompact(context, frame, query)) return true;
+    query.fde = nullptr;
+    AppleSections sections {};
+    if (!AppleSectionsOf(query.pc, sections) || !sections.eh || sections.ehSize < 8) return false;
+    query.text = sections.base;
+    query.data = sections.base;
+    const Byte* p = sections.eh;
+    const Byte* end = p + sections.ehSize;
+    while (end - p >= 8) {
+        const Byte* record = p;
+        const auto length = Read<std::uint32_t>(p);
+        if (length == 0) return false;
+        if (length == 0xffffffff || length < 4 || Word(end - p) < length) return false;
+        const Byte* next = p + length;
+        if (Read<std::uint32_t>(p)) {
+            query.fde = record;
+            frame = {};
+            if (DecodeCandidate(context, frame, query)) return true;
         }
-        return false;
+        p = next;
     }
-#endif
+    return false;
+#elif defined(__linux__)
+    dl_iterate_phdr(FindFrame, &query);
     return DecodeCandidate(context, frame, query);
 #else
     void* image = nullptr;
@@ -590,6 +693,11 @@ bool CompactRules(Frame& frame, Rules& rules) {
         }
         return true;
     }
+    if (mode == 0) {
+        rules.cfaRegister = 7;
+        rules.cfaOffset = 8;
+        return true;
+    }
     if (mode != 0x02000000u && mode != 0x03000000u) return false;
     const auto stackEncoded = (encoding >> 16) & 0xffu;
     const auto stackAdjust = (encoding >> 13) & 7u;
@@ -660,7 +768,12 @@ bool CompactRules(Frame& frame, Rules& rules) {
 bool GetRules(_Unwind_Context& context, Frame& frame, Rules& rules) {
     if (!DecodeFrame(context, frame)) return false;
     if (frame.useCompact) {
-        if (!CompactRules(frame, rules)) return false;
+        if (!CompactRules(frame, rules)) {
+#ifdef __APPLE__
+            Remember("rules", context.registers[16], frame.compactEncoding, frame.personality);
+#endif
+            return false;
+        }
         if (rules.cfaRegister >= 17) return false;
         context.cfa = context.registers[rules.cfaRegister] + rules.cfaOffset;
         return true;
@@ -765,22 +878,45 @@ extern "C" {
 _Unwind_Reason_Code APS5_VABI _Unwind_RaiseException_nid_postfix(_Unwind_Exception* exception) {
     _Unwind_Context start;
     LibcCaptureRegisters(start.registers);
-    if (!LibcUnwind::Step(start)) return _URC_FATAL_PHASE1_ERROR;
+    if (!LibcUnwind::Step(start)) {
+#ifdef __APPLE__
+        LibcUnwind::LogMiss();
+#endif
+        return _URC_FATAL_PHASE1_ERROR;
+    }
     auto context = start;
     exception->private_1 = 0;
     for (unsigned depth = 0; depth < 65536; ++depth) {
         LibcUnwind::Frame frame; LibcUnwind::Rules rules;
-        if (!LibcUnwind::GetRules(context, frame, rules)) return _URC_END_OF_STACK;
+        if (!LibcUnwind::GetRules(context, frame, rules)) {
+#ifdef __APPLE__
+            LibcUnwind::LogMiss();
+#endif
+            return _URC_END_OF_STACK;
+        }
         if (frame.personality) {
             auto result = LibcUnwind::CallPersonality(frame.personality, _UA_SEARCH_PHASE, exception, &context);
             if (result == _URC_HANDLER_FOUND) {
                 exception->private_2 = context.cfa;
                 return LibcUnwind::PhaseTwo(start, exception);
             }
-            if (result != _URC_CONTINUE_UNWIND) return _URC_FATAL_PHASE1_ERROR;
+            if (result != _URC_CONTINUE_UNWIND) {
+#ifdef __APPLE__
+                LibcUnwind::LogMiss();
+#endif
+                return _URC_FATAL_PHASE1_ERROR;
+            }
         }
-        if (!LibcUnwind::Step(context)) return _URC_END_OF_STACK;
+        if (!LibcUnwind::Step(context)) {
+#ifdef __APPLE__
+            LibcUnwind::LogMiss();
+#endif
+            return _URC_END_OF_STACK;
+        }
     }
+#ifdef __APPLE__
+    LibcUnwind::LogMiss();
+#endif
     return _URC_FATAL_PHASE1_ERROR;
 }
 
