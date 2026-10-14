@@ -1,7 +1,21 @@
 #!/bin/sh
 set -eu
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
-build=${1:-$root/build}
+interactive=0
+build=
+for argument in "$@"; do
+    case $argument in
+        --interactive) interactive=1 ;;
+        *)
+            if [ -n "$build" ]; then
+                echo "usage: tools/macos_moltenvk_smoke.sh [--interactive] [build]" >&2
+                exit 2
+            fi
+            build=$argument
+            ;;
+    esac
+done
+build=${build:-$root/build}
 case $build in
     /*) ;;
     *) build=$root/$build ;;
@@ -57,21 +71,39 @@ EOF
 echo "relinked square"
 cd "$guest"
 set +e
-DYLD_LIBRARY_PATH="$guest/vk${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
-    VK_DRIVER_FILES="$guest/vk/MoltenVK_icd.json" \
-    VK_ICD_FILENAMES="$guest/vk/MoltenVK_icd.json" \
-    APS5_SQUARE_FRAMES=2 \
-    APS5_DUMP_FRAMES=1 \
-    APS5_DUMP_SCALE=1 \
-    APS5_NO_GPU_DUMP=1 \
-    APS5_SYNC_FLIP=1 \
-    NSUnbufferedIO=YES \
-    "$guest/eboot"
+if [ "$interactive" -eq 1 ]; then
+    echo "interactive: left stick moves the player, Cross clears both coins, a tone plays every 15 frames, Escape or Options closes the window, otherwise it stays open for 30 seconds"
+    DYLD_LIBRARY_PATH="$guest/vk${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
+        VK_DRIVER_FILES="$guest/vk/MoltenVK_icd.json" \
+        VK_ICD_FILENAMES="$guest/vk/MoltenVK_icd.json" \
+        APS5_SQUARE_INTERACTIVE=1 \
+        APS5_DUMP_FRAMES=0 \
+        NSUnbufferedIO=YES \
+        "$guest/eboot"
+else
+    echo "dump directory $guest"
+    DYLD_LIBRARY_PATH="$guest/vk${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
+        VK_DRIVER_FILES="$guest/vk/MoltenVK_icd.json" \
+        VK_ICD_FILENAMES="$guest/vk/MoltenVK_icd.json" \
+        APS5_SQUARE_INTERACTIVE=0 \
+        APS5_SQUARE_FRAMES=2 \
+        APS5_DUMP_FRAMES=1 \
+        APS5_DUMP_SCALE=1 \
+        APS5_NO_GPU_DUMP=1 \
+        APS5_DUMP_DIR="$guest" \
+        APS5_SYNC_FLIP=1 \
+        NSUnbufferedIO=YES \
+        "$guest/eboot"
+fi
 guest_status=$?
 set -e
 if [ "$guest_status" -ne 0 ]; then
     echo "square status $guest_status"
     exit "$guest_status"
+fi
+if [ "$interactive" -eq 1 ]; then
+    echo "square interactive ok"
+    exit 0
 fi
 python3 - "$guest/frame_000.bmp" <<'PY'
 import struct, sys

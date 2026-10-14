@@ -40,6 +40,9 @@
 #include <chrono>
 #include <charconv>
 #include <condition_variable>
+#include <cstdio>
+#include <filesystem>
+#include <system_error>
 #include <fstream>
 #include <cctype>
 #include <cstdlib>
@@ -2438,6 +2441,10 @@ bool VulkanDevice::PresentClear(std::uint32_t width, std::uint32_t height, bool 
     return present(width, height, opaque, {});
 }
 
+namespace {
+std::filesystem::path FrameDumpFile(int index);
+}
+
 void VulkanDevice::PresentPixels(std::uint32_t width, std::uint32_t height, std::span<const std::byte> pixels) {
     APS5_LOG_OUT("PresentPixels width=%u height=%u pixels=%zu expected=%llu", width, height, pixels.size(), static_cast<unsigned long long>(width) * height * 4u);
     require(width != 0 && height != 0 && width <= 16384 && height <= 16384, "invalid display image extent");
@@ -2449,9 +2456,9 @@ void VulkanDevice::PresentPixels(std::uint32_t width, std::uint32_t height, std:
     }();
     static int dumped = 0;
     if (dumped < dumpLimit) {
-        char name[32];
-        std::snprintf(name, sizeof(name), "frame_%03d.bmp", dumped++);
-        if (std::FILE* file = std::fopen(name, "wb")) {
+        const auto path = FrameDumpFile(dumped++);
+        const auto name = path.string();
+        if (std::FILE* file = std::fopen(name.c_str(), "wb")) {
             const std::uint32_t imageBytes = width * height * 4;
             const std::uint32_t header[13] = {0, 0, 54, 40, width, static_cast<std::uint32_t>(-static_cast<std::int32_t>(height)), 1u | (32u << 16u), 0, imageBytes, 2835, 2835, 0, 0};
             const std::uint16_t magic = 0x4d42;
@@ -2461,6 +2468,8 @@ void VulkanDevice::PresentPixels(std::uint32_t width, std::uint32_t height, std:
             std::fwrite(header + 1, 4, 12, file);
             std::fwrite(pixels.data(), 1, pixels.size(), file);
             std::fclose(file);
+            std::fprintf(stderr, "[gpu] wrote %s\n", name.c_str());
+            std::fflush(stderr);
         }
     }
     // Tests and tools present pixels synchronously; the game path splits the steps (see Driver::Present).
@@ -2486,6 +2495,18 @@ std::uint32_t DumpScale() {
     return scale;
 }
 
+// APS5_DUMP_DIR, when set, is the directory for frame_<index>.bmp. Otherwise the name is
+// relative to the working directory at the open, which is what the frame-dump queue test uses.
+std::filesystem::path FrameDumpFile(int index) {
+    char leaf[32];
+    std::snprintf(leaf, sizeof(leaf), "frame_%03d.bmp", index);
+    const char* directory = std::getenv("APS5_DUMP_DIR");
+    if (directory == nullptr || *directory == '\0') return leaf;
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    return std::filesystem::path(directory) / leaf;
+}
+
 // frame_<index>.bmp: every DumpScale()-th pixel of a BGRA8 image, 32-bit top-down.
 void WriteFrameBmp(int index, std::uint32_t fullWidth, std::uint32_t fullHeight, std::span<const std::byte> full, std::uint32_t scale) {
     require(scale != 0 && full.size() == static_cast<std::size_t>(fullWidth) * fullHeight * 4, "invalid frame dump pixels");
@@ -2495,12 +2516,12 @@ void WriteFrameBmp(int index, std::uint32_t fullWidth, std::uint32_t fullHeight,
     for (std::uint32_t y = 0; y < height; ++y) {
         for (std::uint32_t x = 0; x < width; ++x) std::memcpy(pixels.data() + (static_cast<std::size_t>(y) * width + x) * 4, full.data() + (static_cast<std::size_t>(y) * scale * fullWidth + x * scale) * 4, 4);
     }
-    char name[32];
-    std::snprintf(name, sizeof(name), "frame_%03d.bmp", index);
+    const auto path = FrameDumpFile(index);
+    const auto name = path.string();
     {
         std::ofstream file;
         file.exceptions(std::ios::failbit | std::ios::badbit);
-        file.open(name, std::ios::binary);
+        file.open(path, std::ios::binary);
         const std::uint32_t imageBytes = width * height * 4;
         const std::uint32_t header[13] = {0, 0, 54, 40, width, static_cast<std::uint32_t>(-static_cast<std::int32_t>(height)), 1u | (32u << 16u), 0, imageBytes, 2835, 2835, 0, 0};
         const std::uint16_t magic = 0x4d42;
@@ -2511,6 +2532,8 @@ void WriteFrameBmp(int index, std::uint32_t fullWidth, std::uint32_t fullHeight,
         file.write(reinterpret_cast<const char*>(pixels.data()), static_cast<std::streamsize>(pixels.size()));
         file.close();
     }
+    std::fprintf(stderr, "[gpu] wrote %s\n", name.c_str());
+    std::fflush(stderr);
 }
 
 ResidentPresent ResidentPresentable(const Graphics::Context& context, const Graphics::StorageTexture& image, const DisplayBuffer& buffer, VkFilter& filter) {
@@ -2570,8 +2593,9 @@ bool NoResidentPresent() {
     return no;
 }
 
-// Debug aid: APS5_DUMP_FRAMES=<n> saves the first n presented display buffers as frame_<index>.bmp,
-// read back by the blit's own submission and written after its fence (RetireSlot), or with
+// Debug aid: APS5_DUMP_FRAMES=<n> saves the first n presented display buffers as frame_<index>.bmp.
+// APS5_DUMP_DIR selects the directory; otherwise the name is relative to the working directory.
+// The bytes are read back by the blit's own submission and written after its fence (RetireSlot), or with
 // APS5_NO_GPU_DUMP=1 decoded from the tiled guest buffer on the CPU, as before.
 struct FrameDumps {
     int limit;

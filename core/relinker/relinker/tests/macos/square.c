@@ -4,6 +4,7 @@
 char *getenv(const char *name);
 void exit(int status);
 int puts(const char *text);
+int64_t time(int64_t *timer);
 int sceVideoOutOpen(int userId, int busType, int index, const void *param);
 void sceVideoOutSetBufferAttribute2(void *attribute, uint64_t pixelFormat, uint32_t tilingMode, uint32_t width, uint32_t height, uint64_t option, uint32_t dccControl, uint64_t dccClear);
 int sceVideoOutRegisterBuffers2(int handle, int setIndex, int bufferIndexStart, const void *buffers, int bufferNum, const void *attribute, int category, void *option);
@@ -38,6 +39,11 @@ static int square_frames(const char *text) {
         ++text;
     }
     return value > 0 ? value : SquareFramesDefault;
+}
+
+static int square_enabled(const char *text) {
+    if (text == 0 || *text == 0 || *text == '0') return 0;
+    return 1;
 }
 
 static void fill(uint8_t *pixels, int originX, int originY, int wide, int high, uint8_t blue, uint8_t green, uint8_t red) {
@@ -103,6 +109,9 @@ void guest_start(void *stack, void *unused) {
     (void)stack;
     (void)unused;
     frames = square_frames(getenv("APS5_SQUARE_FRAMES"));
+    int interactive = square_enabled(getenv("APS5_SQUARE_INTERACTIVE"));
+    int64_t started = -1;
+    int cap = interactive ? 7200 : frames;
     buffers.data = pixels;
     buffers.metadata = 0;
     buffers.reserved0 = 0;
@@ -121,8 +130,9 @@ void guest_start(void *stack, void *unused) {
     }
     pad = scePadInit() == 0 ? scePadOpen(255, 0, 0, 0) : -1;
     audio = sceAudioOutOpen(255, 0, 0, 256, 48000, 1);
-    for (frame = 0; frame < frames; ++frame) {
-        if (pad >= 0 && scePadRead(pad, padData, 1) > 0) {
+    int quit = 0;
+    for (frame = 0; frame < cap && !quit; ++frame) {
+        if (interactive && pad >= 0 && scePadRead(pad, padData, 1) > 0) {
             int stickX = padData[4];
             int stickY = padData[5];
             uint32_t buttons = (uint32_t)padData[0] | ((uint32_t)padData[1] << 8) | ((uint32_t)padData[2] << 16) | ((uint32_t)padData[3] << 24);
@@ -142,6 +152,7 @@ void guest_start(void *stack, void *unused) {
                 coinA = 0;
                 coinB = 0;
             }
+            if ((buttons & 0x0008u) != 0) quit = 1;
         }
         if (coinA && overlaps(x, y, SquareSize, SquareSize, 16, 150, CoinSize, CoinSize)) coinA = 0;
         if (coinB && overlaps(x, y, SquareSize, SquareSize, 260, 16, CoinSize, CoinSize)) coinB = 0;
@@ -165,6 +176,12 @@ void guest_start(void *stack, void *unused) {
             dy = -dy;
             y += dy;
         }
+        if (interactive && started < 0) started = time(0);
+        if (interactive && started >= 0) {
+            int64_t now = time(0);
+            if (now >= started && now - started >= 30) quit = 1;
+        }
+        if (interactive && started < 0 && frame + 1 >= 1800) quit = 1;
     }
     puts("square presented");
     exit(0);
