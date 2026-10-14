@@ -1153,3 +1153,6 @@ if(BUILD_TESTING)
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
     endif()
 endif()
+
+include(${CMAKE_SOURCE_DIR}/cmake/MacosTestSkips.cmake)
+aps5_macos_skip_kernel()
