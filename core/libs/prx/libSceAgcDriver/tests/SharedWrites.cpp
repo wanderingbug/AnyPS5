@@ -63,7 +63,7 @@ void benchmark(bool labels = false, bool backing = true) {
         std::vector<double> times;
         std::uint64_t faults = 0;
         for (unsigned pass = 0; pass < 10; ++pass) {
-#ifndef _WIN32
+#if defined(__linux__)
             rusage before{}, after{};
             getrusage(RUSAGE_THREAD, &before);
 #endif
@@ -77,7 +77,7 @@ void benchmark(bool labels = false, bool backing = true) {
                 } else Write(mapping.Address(), std::span(source).first(bytes), 1);
             }
             const auto us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / 256;
-#ifndef _WIN32
+#if defined(__linux__)
             getrusage(RUSAGE_THREAD, &after);
             if (pass != 0) faults += after.ru_minflt - before.ru_minflt;
 #endif

@@ -38,6 +38,9 @@ int APS5_VABI sceKernelSyncOnAddressWait(std::uint32_t* address, std::uint32_t e
 static constexpr int SCE_KERNEL_ERROR_EINVAL = static_cast<int>(0x80020016);
 static constexpr int SCE_KERNEL_ERROR_ESRCH = static_cast<int>(0x80020003);
 static constexpr int SCE_KERNEL_ERROR_ETIMEDOUT = static_cast<int>(0x8002003c);
+#ifdef SIGUSR1
+#undef SIGUSR1
+#endif
 static constexpr int SIGUSR1 = 30;
 static constexpr int Repeats = 100;
 static constexpr std::size_t R12Offset = 0xa0;

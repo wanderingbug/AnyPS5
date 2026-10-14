@@ -156,7 +156,9 @@ if(BUILD_TESTING)
     set_target_properties(guest_module_fixture PROPERTIES BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "${ANYPS5_LIBRARY_RPATH}")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND AND NOT WIN32)
-        target_link_options(guest_module_fixture PRIVATE -Wl,--no-as-needed)
+        if(NOT APPLE)
+            target_link_options(guest_module_fixture PRIVATE -Wl,--no-as-needed)
+        endif()
         add_test(NAME nid_patcher_dynamic_strings COMMAND ${Python3_EXECUTABLE}
             ${LIBS_INCLUDE_DIR}/nid/tests/test_dynamic_strings.py $<TARGET_FILE:guest_module_fixture>)
         add_test(NAME nid_patcher_symbol_versions COMMAND ${Python3_EXECUTABLE}
