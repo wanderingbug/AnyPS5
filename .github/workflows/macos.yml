@@ -29,25 +29,25 @@ jobs:
       - name: Check that every test executable is registered with ctest
         run: python3 tools/check_test_registration.py build
       - name: Build
-        run: cmake --build build --parallel
+        run: cmake --build build --parallel -- -k 0
       - name: Measure the Rosetta guest address space
         run: ./build/macos_address_space > address-space.log 2>&1 && echo OK || { echo FAILED; tail -40 address-space.log; exit 1; }
       - name: Show the address-space log
         if: always()
-        run: cat address-space.log
+        run: if [ -f address-space.log ]; then cat address-space.log; fi
       - name: Build the prx libraries
         run: cmake --build build --target libs --parallel
       - name: Run the relinked guest and a guest thread
         run: tools/macos_guest_smoke.sh build > guest-smoke.log 2>&1 && echo OK || { echo FAILED; tail -40 guest-smoke.log; exit 1; }
       - name: Show the guest smoke log
         if: always()
-        run: cat guest-smoke.log
+        run: if [ -f guest-smoke.log ]; then cat guest-smoke.log; fi
       - name: Present the square homebrew through MoltenVK
         timeout-minutes: 15
         run: tools/macos_moltenvk_smoke.sh build > moltenvk-square.log 2>&1 && echo OK || { echo FAILED; tail -80 moltenvk-square.log; exit 1; }
       - name: Show the MoltenVK square log
         if: always()
-        run: cat moltenvk-square.log
+        run: if [ -f moltenvk-square.log ]; then cat moltenvk-square.log; fi
       - name: Run the guest and unit tests
         timeout-minutes: 90
         env:

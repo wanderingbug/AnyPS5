@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 
@@ -28,44 +29,80 @@ static void Require(bool condition) {
 }
 
 static int APS5_VABI FormatList(char* buffer, size_t size, const char* format, ...) {
+#ifdef _WIN32
     __builtin_sysv_va_list args;
     __builtin_sysv_va_start(args, format);
+#else
+    std::va_list args;
+    va_start(args, format);
+#endif
     VaList list;
     std::memcpy(&list, args, sizeof(list));
     const VaList original = list;
     const int result = vsnprintf_nid_postfix(buffer, size, format, &list);
     Require(std::memcmp(&list, &original, sizeof(list)) == 0);
+#ifdef _WIN32
     __builtin_sysv_va_end(args);
+#else
+    va_end(args);
+#endif
     return result;
 }
 
 static int APS5_VABI FormatListS(char* buffer, size_t size, const char* format, ...) {
+#ifdef _WIN32
     __builtin_sysv_va_list args;
     __builtin_sysv_va_start(args, format);
+#else
+    std::va_list args;
+    va_start(args, format);
+#endif
     VaList list;
     std::memcpy(&list, args, sizeof(list));
     const int result = vsnprintf_s_nid_postfix(buffer, size, format, &list);
+#ifdef _WIN32
     __builtin_sysv_va_end(args);
+#else
+    va_end(args);
+#endif
     return result;
 }
 
 static int APS5_VABI ScanListS(const char* buffer, const char* format, ...) {
+#ifdef _WIN32
     __builtin_sysv_va_list args;
     __builtin_sysv_va_start(args, format);
+#else
+    std::va_list args;
+    va_start(args, format);
+#endif
     VaList list;
     std::memcpy(&list, args, sizeof(list));
     const int result = vsscanf_s_nid_postfix(buffer, format, &list);
+#ifdef _WIN32
     __builtin_sysv_va_end(args);
+#else
+    va_end(args);
+#endif
     return result;
 }
 
 static int APS5_VABI PrintList(const char* format, ...) {
+#ifdef _WIN32
     __builtin_sysv_va_list args;
     __builtin_sysv_va_start(args, format);
+#else
+    std::va_list args;
+    va_start(args, format);
+#endif
     VaList list;
     std::memcpy(&list, args, sizeof(list));
     const int result = vprintf_nid_postfix(format, &list);
+#ifdef _WIN32
     __builtin_sysv_va_end(args);
+#else
+    va_end(args);
+#endif
     return result;
 }
 
