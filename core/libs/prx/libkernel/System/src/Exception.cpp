@@ -354,7 +354,8 @@ void FromHost(const mcontext_t& host, GuestMcontext& m) {
     fx[4] = fs.__fpu_ftw;
     std::memcpy(fx + 6, &fs.__fpu_fop, 2);
     std::memcpy(fx + 24, &fs.__fpu_mxcsr, 4);
-    std::memcpy(fx + 28, &fs.__fpu_mxcsr_mask, 4);
+    // Darwin's member is __fpu_mxcsrmask. FXSAVE stores that value at the MXCSR_MASK slot.
+    std::memcpy(fx + 28, &fs.__fpu_mxcsrmask, 4);
     const auto* xmm = &fs.__fpu_xmm0;
     for (int index = 0; index < 16; ++index) std::memcpy(fx + 160 + static_cast<std::size_t>(index) * 16, xmm[index].__xmm_reg, 16);
     m.fpformat = 1;
@@ -389,7 +390,7 @@ void ToHost(const GuestMcontext& m, mcontext_t& host) {
     fs.__fpu_ftw = fx[4];
     std::memcpy(&fs.__fpu_fop, fx + 6, 2);
     std::memcpy(&fs.__fpu_mxcsr, fx + 24, 4);
-    std::memcpy(&fs.__fpu_mxcsr_mask, fx + 28, 4);
+    std::memcpy(&fs.__fpu_mxcsrmask, fx + 28, 4);
     auto* xmm = &fs.__fpu_xmm0;
     for (int index = 0; index < 16; ++index) std::memcpy(xmm[index].__xmm_reg, fx + 160 + static_cast<std::size_t>(index) * 16, 16);
 }
