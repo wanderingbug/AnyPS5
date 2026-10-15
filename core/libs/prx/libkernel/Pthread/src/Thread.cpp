@@ -418,13 +418,14 @@ void ThreadCancel::EndWait() {
     rsp = reinterpret_cast<std::uintptr_t>(&rsp);
 #endif
     constexpr std::uintptr_t alignment = 16;
-    const auto high = rsp & ~(alignment - 1);
-    std::uintptr_t hostLow = 0;
-    std::uintptr_t hostHigh = 0;
-    if (HostStackLimits(&hostLow, &hostHigh) && high <= hostHigh && high >= self->stackSize && high - self->stackSize >= hostLow)
+    const auto high = (rsp + alignment - 1) & ~(alignment - 1);
+    if (high >= self->stackSize)
         self->stackAddress = reinterpret_cast<void*>(high - self->stackSize);
     RegisterStack(self);
-    return entry(arg);
+    // Keep this frame under the guest. A tail call would pop it, and the worker's locals would sit above the window.
+    void* const result = entry(arg);
+    __asm__ volatile("" : : "r"(result) : "memory");
+    return result;
 }
 #endif
 
