@@ -61,11 +61,18 @@ static int registerVideoOutEvent(int handle, KernelEqueue eq, int16_t eventKind,
         KernelEvent triggered = e->event;
         triggered.fflags = triggered.fflags < 0xfu ? triggered.fflags + 1u : triggered.fflags;
         triggered.data = static_cast<intptr_t>(newData);
-        if (e->triggered) {
+        const bool coalesce =
+#ifdef __APPLE__
+            e->event.ident == static_cast<uintptr_t>(VIDEO_OUT_EVENT_VBLANK) || e->event.ident == static_cast<uintptr_t>(VIDEO_OUT_EVENT_PRE_VBLANK_START);
+#else
+            false;
+#endif
+        if (e->triggered && !coalesce) {
             e->pendingEvents.push_back(triggered);
         } else {
             e->event = triggered;
             e->triggered = true;
+            if (coalesce) e->pendingEvents.clear();
         }
     };
     event.filter.resetFunc = [](KernelEqueueEvent* e) {

@@ -335,6 +335,21 @@ void SleepNanos(std::uint64_t nanos) {
         return;
     }
     SleepUntil(NowNanos() + nanos);
+#elif defined(__APPLE__)
+    const int saved = errno;
+    const auto start = NowNanos();
+    const auto deadline = nanos > std::numeric_limits<std::uint64_t>::max() - start ? std::numeric_limits<std::uint64_t>::max() : start + nanos;
+    while (NowNanos() < deadline) {
+        const auto left = deadline - NowNanos();
+        struct timespec req{};
+        const auto seconds = left / 1000000000ULL;
+        const auto maxSeconds = static_cast<std::uint64_t>(std::numeric_limits<time_t>::max());
+        req.tv_sec = static_cast<time_t>(seconds > maxSeconds ? maxSeconds : seconds);
+        req.tv_nsec = static_cast<long>(seconds > maxSeconds ? 0 : left % 1000000000ULL);
+        if (req.tv_sec == 0 && req.tv_nsec == 0) break;
+        if (nanosleep(&req, nullptr) == -1 && errno != EINTR) break;
+    }
+    errno = saved;
 #else
     struct timespec req{};
     req.tv_sec = static_cast<time_t>(nanos / 1000000000ULL);

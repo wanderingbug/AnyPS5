@@ -433,7 +433,7 @@ Pipeline::Pipeline(const Context& context, const State& state, const VertexInput
         depthStencil.depthBoundsTestEnable = depthBounds;
         depthStencil.stencilTestEnable = state.stencilTest;
         depthStencil.front = state.stencilFront;
-        depthStencil.back = state.stencilBack;
+        depthStencil.back = context.separateStencilMaskRef ? state.stencilBack : state.stencilFront;
         VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
         const bool alternateAlpha = SplitsAlternateAlpha(state);
         std::vector<VkPipelineColorBlendAttachmentState> firstChannels(state.blends.begin(), state.blends.end());
@@ -688,8 +688,9 @@ void Pipeline::setLibraryState(VkCommandBuffer commands, const State& state) con
         context.Resolved(&DeviceFunctions::cmdSetStencilWriteMask, "vkCmdSetStencilWriteMask")(commands, face, op.writeMask);
         context.Resolved(&DeviceFunctions::cmdSetStencilReference, "vkCmdSetStencilReference")(commands, face, op.reference);
     };
-    stencil(VK_STENCIL_FACE_FRONT_BIT, depth ? state.stencilFront : VkStencilOpState{});
-    stencil(VK_STENCIL_FACE_BACK_BIT, depth ? state.stencilBack : VkStencilOpState{});
+    const auto front = depth ? state.stencilFront : VkStencilOpState{};
+    stencil(VK_STENCIL_FACE_FRONT_BIT, front);
+    stencil(VK_STENCIL_FACE_BACK_BIT, depth && context.separateStencilMaskRef ? state.stencilBack : front);
 }
 
 void Pipeline::ContinueSecondChannel(VkCommandBuffer commands) const {

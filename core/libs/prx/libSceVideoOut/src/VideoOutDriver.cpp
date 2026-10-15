@@ -28,9 +28,43 @@
 #include "prx/libc/include/Shutdown.hpp"
 #ifdef __APPLE__
 #include <unistd.h>
+#include <dispatch/dispatch.h>
+#include <pthread.h>
 #include <CoreFoundation/CoreFoundation.h>
 extern "C" bool Aps5MainThreadIsServing_nid_no_patch();
 extern "C" void Aps5PostMainThreadJob_nid_no_patch(void (*job)(void*), void* context);
+
+extern "C" void Aps5PumpMainRunLoop_nid_no_patch() {
+    if (pthread_main_np() == 0) return;
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
+}
+
+template <class Body>
+void RunWhereAppKitCanDraw(Body&& body) {
+    if (pthread_main_np() != 0) {
+        body();
+        return;
+    }
+    struct Job {
+        Body* body;
+        std::exception_ptr error;
+        dispatch_semaphore_t done;
+        static void Run(void* raw) {
+            auto* job = static_cast<Job*>(raw);
+            try {
+                (*job->body)();
+            } catch (...) {
+                job->error = std::current_exception();
+            }
+            dispatch_semaphore_signal(job->done);
+        }
+    };
+    Job job{&body, {}, dispatch_semaphore_create(0)};
+    dispatch_async_f(dispatch_get_main_queue(), &job, &Job::Run);
+    dispatch_semaphore_wait(job.done, DISPATCH_TIME_FOREVER);
+    dispatch_release(job.done);
+    if (job.error) std::rethrow_exception(job.error);
+}
 
 // HIDAPI schedules its IOHIDManager on this thread's default mode, and
 // GameController.framework delivers pad values the same way. SDL_PollEvent's
@@ -337,6 +371,12 @@ VideoOutDriver::VideoOutDriver() {
 #endif
     initPresentationSubsystem();
     try {
+#ifdef __APPLE__
+        window.Ensure(VIDEO_OUT_DEFAULT_WIDTH, VIDEO_OUT_DEFAULT_HEIGHT);
+        const auto extensions = windowExtensions(window.Handle());
+        AgcDriverAttachWindow_nid_postfix({window.Handle(), extensions, &createWindowSurface, &windowDrawableSize, VIDEO_OUT_DEFAULT_WIDTH, VIDEO_OUT_DEFAULT_HEIGHT, nullptr});
+        presentationAttached = true;
+#endif
         AgcDriverWaitIdle_nid_postfix();
         std::promise<void> started;
         auto attached = started.get_future();
@@ -593,6 +633,7 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
         req.cfg->lastFlipVblank = req.cfg->vblankStatus.count;
     }
     require(req.width != 0 && req.height != 0 && req.width <= static_cast<uint32_t>(std::numeric_limits<int>::max()) && req.height <= static_cast<uint32_t>(std::numeric_limits<int>::max()), "invalid window dimensions");
+    const auto presentOnHost = [&] {
     if (req.cfg->busType == VIDEO_OUT_BUS_TYPE_OVERLAY) {
         std::lock_guard lock(req.cfg->mutex);
         req.cfg->CheckAlive();
@@ -624,6 +665,12 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
         window.UpdateTitle();
         timing.Mark("window_title");
     }
+    };
+#ifdef __APPLE__
+    RunWhereAppKitCanDraw(presentOnHost);
+#else
+    presentOnHost();
+#endif
     std::lock_guard lock(req.cfg->mutex);
     timing.Mark("completion_mutex_wait");
     req.cfg->CheckAlive();
@@ -655,9 +702,12 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
 
 void VideoOutDriver::presentLoop(std::stop_token token, std::promise<void>& started) {
     try {
-        window.Ensure(VIDEO_OUT_DEFAULT_WIDTH, VIDEO_OUT_DEFAULT_HEIGHT);
-        const auto extensions = windowExtensions(window.Handle());
-        AgcDriverAttachWindow_nid_postfix({window.Handle(), extensions, &createWindowSurface, &windowDrawableSize, VIDEO_OUT_DEFAULT_WIDTH, VIDEO_OUT_DEFAULT_HEIGHT, nullptr});
+        if (!presentationAttached) {
+            window.Ensure(VIDEO_OUT_DEFAULT_WIDTH, VIDEO_OUT_DEFAULT_HEIGHT);
+            const auto extensions = windowExtensions(window.Handle());
+            AgcDriverAttachWindow_nid_postfix({window.Handle(), extensions, &createWindowSurface, &windowDrawableSize, VIDEO_OUT_DEFAULT_WIDTH, VIDEO_OUT_DEFAULT_HEIGHT, nullptr});
+            presentationAttached = true;
+        }
     } catch (...) {
         window.Destroy();
         started.set_exception(std::current_exception());

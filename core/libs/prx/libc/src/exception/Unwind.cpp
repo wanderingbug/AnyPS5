@@ -45,6 +45,8 @@ void LogMiss() {
 
 Word ResolveStub(Word personality) {
     if (!personality) return 0;
+    Dl_info image {};
+    if (!dladdr(reinterpret_cast<void*>(personality), &image) || image.dli_fbase == nullptr) return 0;
     const auto* code = reinterpret_cast<const Byte*>(personality);
     if (code[0] != 0xff || code[1] != 0x25) return personality;
     std::int32_t displacement = 0;
@@ -70,7 +72,13 @@ _Unwind_Reason_Code CallPersonality(Word personality, _Unwind_Action actions, _U
     if (personality == reinterpret_cast<Word>(__gcc_personality_v0_nid_postfix) || personality == reinterpret_cast<Word>(__gcc_personality_v0))
         return __gcc_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
 #ifdef __APPLE__
+    {
+        Dl_info mapped {};
+        if (!dladdr(reinterpret_cast<void*>(personality), &mapped) || mapped.dli_fbase == nullptr)
+            return (actions & _UA_SEARCH_PHASE) ? _URC_FATAL_PHASE1_ERROR : _URC_FATAL_PHASE2_ERROR;
+    }
     personality = ResolveStub(personality);
+    if (personality == 0) return (actions & _UA_SEARCH_PHASE) ? _URC_FATAL_PHASE1_ERROR : _URC_FATAL_PHASE2_ERROR;
     if (personality == reinterpret_cast<Word>(__gxx_personality_v0_nid_postfix) || personality == reinterpret_cast<Word>(__gxx_personality_v0))
         return __gxx_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
     if (personality == reinterpret_cast<Word>(__gcc_personality_v0_nid_postfix) || personality == reinterpret_cast<Word>(__gcc_personality_v0))
@@ -410,8 +418,7 @@ bool AppleCompact(_Unwind_Context& context, Frame& frame, Lookup& query) {
         if (personalityIndex - 1 >= personalityCount) return false;
         const auto delta = static_cast<std::int32_t>(Section32(info, infoSize, personalityOffset + static_cast<unsigned long>(personalityIndex - 1) * 4u, ok));
         if (!ok) return false;
-        const auto slot = static_cast<Word>(static_cast<std::intptr_t>(base) + delta);
-        std::memcpy(&personality, reinterpret_cast<const void*>(slot), sizeof(personality));
+        personality = static_cast<Word>(static_cast<std::intptr_t>(base) + delta);
     }
     miss.encoding = encoding;
     miss.personality = personality;

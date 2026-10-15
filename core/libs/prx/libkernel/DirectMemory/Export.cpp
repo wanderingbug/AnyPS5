@@ -576,7 +576,36 @@ int UnlockHostPages(std::uintptr_t start, std::uintptr_t end) {
     return 0;
 }
 #else
+#ifdef __APPLE__
+bool GuestRangeCommitted(std::uintptr_t start, std::uintptr_t end) {
+    for (auto cursor = start; cursor < end;) {
+        VirtualQueryInfo info{};
+        if (sceKernelVirtualQuery(reinterpret_cast<const void*>(cursor), 0, &info, sizeof(info)) != 0) return false;
+        if (info.is_committed == 0 || info.end <= cursor) return false;
+        cursor = info.end;
+    }
+    return true;
+}
+
+void TouchCommittedPages(std::uintptr_t start, std::uintptr_t end) {
+    volatile unsigned char sink = 0;
+    for (auto cursor = start; cursor < end;) {
+        VirtualQueryInfo info{};
+        if (sceKernelVirtualQuery(reinterpret_cast<const void*>(cursor), 0, &info, sizeof(info)) != 0 || info.end <= cursor) return;
+        if ((info.protection & 1) != 0) {
+            const auto limit = std::min(end, static_cast<std::uintptr_t>(info.end));
+            for (auto page = cursor; page < limit; page += 0x1000) sink = *reinterpret_cast<volatile unsigned char*>(page);
+        }
+        cursor = info.end;
+    }
+    static_cast<void>(sink);
+}
+#endif
+
 int LockHostPages(std::uintptr_t start, std::uintptr_t end) {
+#ifdef __APPLE__
+    if (!GuestRangeCommitted(start, end)) return SCE_KERNEL_ERROR_ENOMEM;
+#endif
     auto* const address = reinterpret_cast<void*>(start);
     const std::size_t bytes = end - start;
     if (::mlock(address, bytes) == 0) return 0;
@@ -589,6 +618,12 @@ int LockHostPages(std::uintptr_t start, std::uintptr_t end) {
             error = errno;
         }
     }
+#ifdef __APPLE__
+    if (error == EPERM || error == ENOMEM || error == EAGAIN) {
+        TouchCommittedPages(start, end);
+        return 0;
+    }
+#endif
     switch (error) {
     case ENOMEM: return SCE_KERNEL_ERROR_ENOMEM;
     case EPERM: return SCE_KERNEL_ERROR_EPERM;
@@ -599,9 +634,15 @@ int LockHostPages(std::uintptr_t start, std::uintptr_t end) {
 
 int UnlockHostPages(std::uintptr_t start, std::uintptr_t end) {
     if (!GuestRangeMapped(start, end)) return SCE_KERNEL_ERROR_ENOMEM;
+#ifdef __APPLE__
+    if (!GuestRangeCommitted(start, end)) return 0;
+#endif
     if (::munlock(reinterpret_cast<void*>(start), end - start) == 0) return 0;
     const int error = errno;
     if (error == ENOMEM) return SCE_KERNEL_ERROR_ENOMEM;
+#ifdef __APPLE__
+    if (error == EINVAL || error == EPERM) return 0;
+#endif
     throw std::system_error(error, std::generic_category(), "munlock failed");
 }
 #endif

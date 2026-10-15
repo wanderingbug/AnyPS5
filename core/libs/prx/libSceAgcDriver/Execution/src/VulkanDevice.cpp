@@ -344,6 +344,9 @@ struct VulkanDevice::State {
     bool textureCompressionBC = false;
     bool triangleFans = true;
     bool samplerMipLodBias = true;
+    bool imageViewFormatSwizzle = true;
+    bool vulkanEvents = true;
+    bool separateStencilMaskRef = true;
     VkCompositeAlphaFlagBitsKHR compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     bool samplerFilterMinmax = false;
     bool nonSeamlessCubeMap = false;
@@ -1649,6 +1652,9 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
         bdaFeatures.pNext = &portabilityFeatures;
         state->triangleFans = queried.triangleFans == VK_TRUE;
         state->samplerMipLodBias = queried.samplerMipLodBias == VK_TRUE;
+        state->imageViewFormatSwizzle = queried.imageViewFormatSwizzle == VK_TRUE;
+        state->vulkanEvents = queried.events == VK_TRUE;
+        state->separateStencilMaskRef = queried.separateStencilMaskRef == VK_TRUE;
         deviceExtensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
         deviceInfo.enabledExtensionCount = static_cast<std::uint32_t>(deviceExtensions.size());
         deviceInfo.ppEnabledExtensionNames = deviceExtensions.data();
@@ -3190,6 +3196,9 @@ Graphics::Context VulkanDevice::buildContext() const {
     context.sampleLocationSampleCounts = state->sampleLocationSampleCounts;
     context.triangleFans = state->triangleFans;
     context.samplerMipLodBias = state->samplerMipLodBias;
+    context.imageViewFormatSwizzle = state->imageViewFormatSwizzle;
+    context.vulkanEvents = state->vulkanEvents;
+    context.separateStencilMaskRef = state->separateStencilMaskRef;
     context.memoryProperties2 = state->memoryBudget ? state->InstanceFunction<PFN_vkGetPhysicalDeviceMemoryProperties2>("vkGetPhysicalDeviceMemoryProperties2") : nullptr;
     context.singlePassStorage = state->storageImageWithoutFormat;
     return context;

@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <mach/mach.h>
 #include <pthread.h>
+#include <sys/mman.h>
 #else
 #include <cerrno>
 #include <cstdint>
@@ -571,9 +572,16 @@ bool describePages(std::uintptr_t address, std::size_t bytes, Emit&& emit) {
             cursor = gapEnd;
             continue;
         }
-        const bool readable = (info.protection & VM_PROT_READ) != 0;
-        const bool writable = readable && (info.protection & VM_PROT_WRITE) != 0;
-        const auto next = std::min<std::uintptr_t>(end, static_cast<std::uintptr_t>(region + size));
+        bool readable = (info.protection & VM_PROT_READ) != 0;
+        bool writable = readable && (info.protection & VM_PROT_WRITE) != 0;
+        auto next = std::min<std::uintptr_t>(end, static_cast<std::uintptr_t>(region + size));
+        std::uintptr_t watchEnd = 0;
+        const int logical = GuestWriteWatch::GuestWriteWatchProtection_nid_postfix(cursor, end, &watchEnd);
+        if (logical >= 0) {
+            readable = (logical & PROT_READ) != 0;
+            writable = readable && (logical & PROT_WRITE) != 0;
+            if (watchEnd > cursor && watchEnd < next) next = watchEnd;
+        }
         if (next <= cursor) return false;
         constexpr auto mask = static_cast<std::uintptr_t>(PageBytes - 1);
         pages.record(cursor & ~mask, (next + mask) & ~mask, readable, writable, generation);

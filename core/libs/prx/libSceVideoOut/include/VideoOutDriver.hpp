@@ -16,7 +16,9 @@
 #include <memory>
 #include <stdexcept>
 #ifdef __APPLE__
+#include <pthread.h>
 #include <stop_token>
+extern "C" void Aps5PumpMainRunLoop_nid_no_patch();
 #endif
 #include "prx/libSceAgcDriver/Execution/include/VideoOutput.hpp"
 #include "prx/libSceAgcDriver/Execution/include/DisplayBuffer.hpp"
@@ -114,9 +116,45 @@ struct EventRegistration {
     uint64_t generation = 0;
 };
 
+struct VblankWait {
+    std::condition_variable_any cond;
+    void notify_one() { cond.notify_one(); }
+    void notify_all() { cond.notify_all(); }
+    template <class Lock, class Predicate>
+    void wait(Lock& lock, std::stop_token token, Predicate pred) {
+#ifdef __APPLE__
+        if (pthread_main_np() != 0) {
+            while (!pred() && !token.stop_requested()) {
+                lock.unlock();
+                Aps5PumpMainRunLoop_nid_no_patch();
+                lock.lock();
+            }
+            return;
+        }
+#endif
+        cond.wait(lock, std::move(token), std::move(pred));
+    }
+    template <class Lock, class Rep, class Period, class Predicate>
+    bool wait_for(Lock& lock, const std::chrono::duration<Rep, Period>& rel, Predicate pred) {
+#ifdef __APPLE__
+        if (pthread_main_np() != 0) {
+            const auto deadline = std::chrono::steady_clock::now() + rel;
+            while (!pred()) {
+                if (std::chrono::steady_clock::now() >= deadline) return pred();
+                lock.unlock();
+                Aps5PumpMainRunLoop_nid_no_patch();
+                lock.lock();
+            }
+            return true;
+        }
+#endif
+        return cond.wait_for(lock, rel, std::move(pred));
+    }
+};
+
 struct VideoOutConfig {
     std::mutex mutex;
-    std::condition_variable_any vblankCond;
+    VblankWait vblankCond;
 
     std::vector<EventRegistration> flipEvents;
     std::vector<EventRegistration> vblankEvents;
@@ -241,6 +279,7 @@ private:
     std::shared_ptr<FlipQueue> flipQueue = std::make_shared<FlipQueue>();
 
     DisplayWindow window;
+    bool presentationAttached = false;
 
     std::jthread presentThread;
     std::jthread vblankThread;

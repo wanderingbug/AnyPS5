@@ -749,6 +749,10 @@ public:
                 case LoadStatus::Rejected: {
                     const auto failures = loadFailures.fetch_add(1, std::memory_order_relaxed);
                     if (failures < 8) std::fprintf(stderr, "[shader-disk-cache] rejected %s (%zu bytes): truncated, corrupt or another format; recompiling\n", name.c_str(), file.size());
+#ifdef __APPLE__
+                    std::error_code removeError;
+                    std::filesystem::remove(directory / name, removeError);
+#endif
                     break;
                 }
             }

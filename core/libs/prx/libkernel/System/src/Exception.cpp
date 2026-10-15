@@ -26,6 +26,9 @@
 #endif
 #include <ucontext.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/thread_act.h>
+#endif
 #endif
 
 extern "C" Pthread APS5_VABI scePthreadSelf();
@@ -343,6 +346,19 @@ void FromHost(const mcontext_t& host, GuestMcontext& m) {
     m.err = fault.__err;
     m.addr = fault.__faultvaddr;
     m.len = sizeof(GuestMcontext);
+    auto* fx = reinterpret_cast<unsigned char*>(m.fpstate);
+    const auto& fs = host->__fs;
+    std::memset(fx, 0, 512);
+    std::memcpy(fx + 0, &fs.__fpu_fcw, 2);
+    std::memcpy(fx + 2, &fs.__fpu_fsw, 2);
+    fx[4] = fs.__fpu_ftw;
+    std::memcpy(fx + 6, &fs.__fpu_fop, 2);
+    std::memcpy(fx + 24, &fs.__fpu_mxcsr, 4);
+    std::memcpy(fx + 28, &fs.__fpu_mxcsr_mask, 4);
+    const auto* xmm = &fs.__fpu_xmm0;
+    for (int index = 0; index < 16; ++index) std::memcpy(fx + 160 + static_cast<std::size_t>(index) * 16, xmm[index].__xmm_reg, 16);
+    m.fpformat = 1;
+    m.ownedfp = 1;
 }
 
 void ToHost(const GuestMcontext& m, mcontext_t& host) {
@@ -366,6 +382,16 @@ void ToHost(const GuestMcontext& m, mcontext_t& host) {
     thread.__rip = m.rip;
     thread.__rsp = m.rsp;
     thread.__rflags = m.rflags;
+    const auto* fx = reinterpret_cast<const unsigned char*>(m.fpstate);
+    auto& fs = host->__fs;
+    std::memcpy(&fs.__fpu_fcw, fx + 0, 2);
+    std::memcpy(&fs.__fpu_fsw, fx + 2, 2);
+    fs.__fpu_ftw = fx[4];
+    std::memcpy(&fs.__fpu_fop, fx + 6, 2);
+    std::memcpy(&fs.__fpu_mxcsr, fx + 24, 4);
+    std::memcpy(&fs.__fpu_mxcsr_mask, fx + 28, 4);
+    auto* xmm = &fs.__fpu_xmm0;
+    for (int index = 0; index < 16; ++index) std::memcpy(xmm[index].__xmm_reg, fx + 160 + static_cast<std::size_t>(index) * 16, 16);
 }
 #else
 void FromHost(const mcontext_t& host, GuestMcontext& m) {
@@ -451,6 +477,12 @@ bool Send(Pthread thread) {
     const int result = pthread_kill(thread->hostThread, HostSignal);
     if (result == ESRCH) return false;
     if (result != 0) throw std::system_error(result, std::generic_category(), "sceKernelRaiseException: cannot signal the target thread");
+#ifdef __APPLE__
+    if (thread != scePthreadSelf()) {
+        const auto port = pthread_mach_thread_np(thread->hostThread);
+        if (port != MACH_PORT_NULL && thread_suspend(port) == KERN_SUCCESS) thread_resume(port);
+    }
+#endif
     return true;
 }
 

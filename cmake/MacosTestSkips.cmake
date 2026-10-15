@@ -16,39 +16,26 @@ function(aps5_macos_skip_libc)
     if(NOT APPLE OR NOT BUILD_TESTING)
         return()
     endif()
-    aps5_macos_skip("skipped, macOS compact unwind does not catch this personality"
-        exception_runtime
-        exception_personality
+    aps5_macos_skip("skipped, macOS compact unwind lookup misses this frame so the C++ exception is uncaught"
         application_heap_invalid_metadata)
     aps5_macos_skip("skipped, macOS has no SOCK_SEQPACKET so the log flush count cannot be observed" log_macros)
     aps5_macos_skip("skipped, macOS CI volume is case-insensitive so PS5 path case is not distinct" guest_path_case)
-    aps5_macos_skip("skipped, macOS guest thread callback raises SIGILL" guest_thread_callback_abi)
 endfunction()
 
 function(aps5_macos_skip_kernel)
     if(NOT APPLE OR NOT BUILD_TESTING)
         return()
     endif()
-    aps5_macos_skip("skipped, macOS arena leaves unreserved holes so this flexible allocation cannot be satisfied" guest_memory)
     aps5_macos_skip("skipped, macOS ModuleInfo leaves TLS and eh_frame empty" guest_module_info)
     aps5_macos_skip("skipped, macOS CI volume is case-insensitive so PS5 path case is not distinct" guest_filesystem)
-    aps5_macos_skip("skipped, macOS guest pthread stack setup aborts" guest_pthread_stack)
-    aps5_macos_skip("skipped, macOS thread CPU clock aborts" guest_thread_cpu_clock)
-    aps5_macos_skip("skipped, macOS guest nanosleep aborts" guest_nanosleep)
-    aps5_macos_skip("skipped, macOS signal delivery does not finish the guest raise-exception wait" guest_raise_exception)
     aps5_macos_skip("skipped, macOS has no POLLRDHUP so this UDP wait does not match" guest_udp)
     aps5_macos_skip("skipped, macOS guest socket pair aborts" guest_socket_pair)
-    aps5_macos_skip("skipped, macOS guest mlock aborts" guest_mlock)
 endfunction()
 
 function(aps5_macos_skip_video_out)
     if(NOT APPLE OR NOT BUILD_TESTING)
         return()
     endif()
-    aps5_macos_skip("skipped, macOS presenter runs on the main thread so this flip does not complete"
-        video_out_flip_controls
-        video_out_flip_overlay
-        video_out_frame_dump_queue)
 endfunction()
 
 function(aps5_macos_skip_agc)
@@ -60,10 +47,7 @@ function(aps5_macos_skip_agc)
         agc_thread_priority_refused_high
         agc_driver_pm4_priority_refused)
     aps5_macos_skip("skipped, macOS profile writer failure was not propagated" agc_profile_output)
-    aps5_macos_skip("skipped, macOS shader disk cache recompiles a program it just saved" agc_shader_disk_cache)
     aps5_macos_skip("skipped, MoltenVK portability or macOS host memory does not match this GPU test"
-        agc_write_tracking
-        agc_shared_write
         agc_driver
         agc_shader_memory
         agc_structurizer

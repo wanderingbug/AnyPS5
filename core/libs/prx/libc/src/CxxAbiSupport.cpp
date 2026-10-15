@@ -62,6 +62,33 @@ void* APS5_VABI __cxa_demangle_nid_postfix(const char* mangled, char* buf, std::
 }
 
 int APS5_VABI __cxa_thread_atexit_impl_nid_postfix(void (APS5_VABI *func)(void*), void* arg, void* dso) {
+#ifdef __APPLE__
+    (void)dso;
+    struct Node {
+        void (APS5_VABI *destructor)(void*);
+        void* object;
+        Node* next;
+    };
+    struct List {
+        Node* head = nullptr;
+        ~List() {
+            while (head != nullptr) {
+                Node* node = head;
+                head = node->next;
+                const auto destructor = node->destructor;
+                void* object = node->object;
+                delete node;
+                if (destructor != nullptr) destructor(object);
+            }
+        }
+    };
+    static thread_local List list;
+    auto* node = new (std::nothrow) Node{func, arg, list.head};
+    if (node == nullptr)
+        return -1;
+    list.head = node;
+    return 0;
+#else
     struct ThreadAtexitContext {
         void (APS5_VABI *destructor)(void*);
         void* object;
@@ -81,6 +108,7 @@ int APS5_VABI __cxa_thread_atexit_impl_nid_postfix(void (APS5_VABI *func)(void*)
     if (result != 0)
         delete context;
     return result;
+#endif
 }
 
 int APS5_VABI LibcInternalExtCxaThreadAtexit_nid_postfix(void (APS5_VABI *destructor)(void*), void* object, void* module_id) {

@@ -903,8 +903,11 @@ std::shared_ptr<const CompiledVariant> findOrCompileVariant(SourceEntry& source,
         std::exception_ptr emissionFailure;
         try {
             variant = std::make_shared<const CompiledVariant>(compileVariant(request, std::move(program), &emissionFailure));
+        } catch (const std::bad_alloc&) {
+            throw;
         } catch (...) {
-            if (emissionFailure != nullptr && FailureMemo()) source.emissionFailures.push_back({request.shader.codeAddress, request.layout, emissionFailure});
+            const auto failure = emissionFailure != nullptr ? emissionFailure : std::current_exception();
+            if (failure != nullptr && FailureMemo()) source.emissionFailures.push_back({request.shader.codeAddress, request.layout, failure});
             throw;
         }
         if (disk) ShaderDiskCache::Store(std::move(diskKey), variant);

@@ -18,6 +18,11 @@
 #include <system_error>
 #include <thread>
 #include <vector>
+#ifdef __APPLE__
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -54,11 +59,33 @@ inline bool WriteFileAtomically(const std::filesystem::path& path, std::span<con
 #endif
     bool written = false;
     {
+#ifdef __APPLE__
+        const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+        if (fd < 0) return false;
+        std::size_t offset = 0;
+        while (offset < bytes.size()) {
+            const auto wrote = ::write(fd, bytes.data() + offset, bytes.size() - offset);
+            if (wrote < 0 && errno == EINTR) continue;
+            if (wrote <= 0) {
+                ::close(fd);
+                std::filesystem::remove(temporary, error);
+                return false;
+            }
+            offset += static_cast<std::size_t>(wrote);
+        }
+        written = ::fsync(fd) == 0;
+        ::close(fd);
+        if (!written) {
+            std::filesystem::remove(temporary, error);
+            return false;
+        }
+#else
         std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
         if (!file) return false;
         file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
         file.close();
         written = !file.fail();
+#endif
     }
     if (!written) {
         std::filesystem::remove(temporary, error);
@@ -93,6 +120,28 @@ inline bool WriteFileAtomically(const std::filesystem::path& path, std::span<con
 
 inline bool ReadWholeFile(const std::filesystem::path& path, std::vector<std::byte>& bytes) {
     bytes.clear();
+#ifdef __APPLE__
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    const auto size = ::lseek(fd, 0, SEEK_END);
+    if (size < 0 || static_cast<std::uint64_t>(size) > bytes.max_size() || ::lseek(fd, 0, SEEK_SET) != 0) {
+        ::close(fd);
+        return false;
+    }
+    bytes.resize(static_cast<std::size_t>(size));
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        const auto got = ::read(fd, bytes.data() + offset, bytes.size() - offset);
+        if (got <= 0) {
+            ::close(fd);
+            bytes.clear();
+            return false;
+        }
+        offset += static_cast<std::size_t>(got);
+    }
+    ::close(fd);
+    return true;
+#else
     try {
         std::ifstream file(path, std::ios::binary | std::ios::ate);
         if (!file) return false;
@@ -114,6 +163,7 @@ inline bool ReadWholeFile(const std::filesystem::path& path, std::vector<std::by
         bytes.clear();
         return false;
     }
+#endif
 }
 
 inline std::uint64_t HashBytes(std::span<const std::byte> bytes, std::uint64_t seed = 0) {

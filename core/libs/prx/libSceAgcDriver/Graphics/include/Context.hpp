@@ -176,6 +176,9 @@ struct Context {
     VkSampleCountFlags sampleLocationSampleCounts = 0;
     bool triangleFans = true;
     bool samplerMipLodBias = true;
+    bool imageViewFormatSwizzle = true;
+    bool vulkanEvents = true;
+    bool separateStencilMaskRef = true;
 
     template<typename TFunction>
     TFunction Function(const char* name) const {

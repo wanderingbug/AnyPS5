@@ -404,6 +404,32 @@ void ThreadCancel::EndWait() {
     BeginWait(nullptr);
 }
 
+#ifdef __APPLE__
+[[gnu::noinline]] static void* CallGuestOnMeasuredStack(PthreadPrivate* self, PthreadEntry entry, void* arg) {
+    std::uintptr_t rsp = 0;
+#if defined(__x86_64__)
+    __asm__ volatile("movq %%rsp, %0" : "=r"(rsp));
+#elif defined(__aarch64__)
+    __asm__ volatile("mov %0, sp" : "=r"(rsp));
+#else
+    rsp = reinterpret_cast<std::uintptr_t>(&rsp);
+#endif
+    constexpr std::uintptr_t alignment = 16;
+    constexpr std::uintptr_t hostCallStack = 256u * 1024u + 64u * 1024u;
+    const auto high = rsp & ~(alignment - 1);
+    if (high < self->stackSize)
+        throw std::runtime_error("Cannot place the guest thread stack");
+    const auto low = high - self->stackSize;
+    std::uintptr_t hostLow = 0;
+    std::uintptr_t hostHigh = 0;
+    if (!HostStackLimits(&hostLow, &hostHigh) || low < hostLow + hostCallStack || high > hostHigh)
+        throw std::runtime_error("Cannot place the guest thread stack");
+    self->stackAddress = reinterpret_cast<void*>(low);
+    RegisterStack(self);
+    return entry(arg);
+}
+#endif
+
 static void RunThread(std::unique_ptr<ThreadArgs> args) {
     APS5_LOG_OUT("RunThread entry=0x%llx arg=%p self=%p", static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(args->entry)), args->arg, static_cast<void*>(args->self));
     const auto entry = args->entry;
@@ -412,7 +438,9 @@ static void RunThread(std::unique_ptr<ThreadArgs> args) {
     BindHostCpuClock(self);
     TimedWait::BindThreadWaitState(&self->waitCount);
     CurrentGuestState().current = self;
+#ifndef __APPLE__
     RegisterStack(self);
+#endif
 #ifndef _WIN32
     const sigset_t signalMask = args->signalMask;
 #endif
@@ -420,7 +448,11 @@ static void RunThread(std::unique_ptr<ThreadArgs> args) {
 #ifndef _WIN32
     pthread_sigmask(SIG_SETMASK, &signalMask, nullptr);
 #endif
+#ifdef __APPLE__
+    finishThread(self, CallGuestOnMeasuredStack(self, entry, arg));
+#else
     finishThread(self, entry(arg));
+#endif
     CurrentGuestState().current = nullptr;
 }
 

@@ -265,13 +265,20 @@ private:
         return true;
     }
 
-    static void TryReserve(std::vector<std::pair<std::uintptr_t, std::uintptr_t>>& occupied, std::uintptr_t from, std::uintptr_t to) {
+    static void TryReserveLadder(std::vector<std::pair<std::uintptr_t, std::uintptr_t>>& occupied, std::uintptr_t from, std::uintptr_t to) {
         const auto page = static_cast<std::uintptr_t>(vm_page_size);
         if (page == 0 || from >= to) return;
         constexpr std::uintptr_t sizes[] = {std::uintptr_t{1} << 30, std::uintptr_t{64} << 20, std::uintptr_t{4} << 20, std::uintptr_t{256} << 10};
+        constexpr std::uintptr_t hostileSkip = std::uintptr_t{4} << 20;
         std::uintptr_t cursor = from;
         int pageFailures = 0;
         while (cursor < to) {
+            if ((cursor & (page - 1)) != 0) {
+                const auto aligned = std::min(to, alignUp(cursor, static_cast<std::size_t>(page)));
+                occupied.emplace_back(cursor, aligned);
+                cursor = aligned;
+                continue;
+            }
             bool placed = false;
             for (const auto size : sizes) {
                 if (size > to - cursor || (cursor & (page - 1)) != 0) continue;
@@ -282,18 +289,59 @@ private:
                 break;
             }
             if (placed) continue;
-            if ((cursor & (page - 1)) == 0 && page <= to - cursor && ReserveFixed(cursor, page)) {
+            if (page <= to - cursor && ReserveFixed(cursor, page)) {
                 cursor += page;
                 pageFailures = 0;
                 continue;
             }
-            if (++pageFailures >= 4) {
-                occupied.emplace_back(cursor, to);
-                return;
+            const auto failed = std::min(page, to - cursor);
+            occupied.emplace_back(cursor, cursor + failed);
+            cursor += failed;
+            if (++pageFailures < 4) continue;
+            const auto resume = std::min(to, alignUp(cursor, static_cast<std::size_t>(hostileSkip)));
+            if (resume > cursor) occupied.emplace_back(cursor, resume);
+            cursor = resume;
+            pageFailures = 0;
+        }
+    }
+
+    static void TryReserve(std::vector<std::pair<std::uintptr_t, std::uintptr_t>>& occupied, std::uintptr_t from, std::uintptr_t to) {
+        const auto page = static_cast<std::uintptr_t>(vm_page_size);
+        if (page == 0 || from >= to) return;
+        constexpr std::uintptr_t RosettaSafeStart = 0x8000000000ull;
+        constexpr std::uintptr_t gib = std::uintptr_t{1} << 30;
+        std::uintptr_t cursor = from;
+        const auto lowEnd = std::min(to, RosettaSafeStart);
+        while (cursor < lowEnd) {
+            if ((cursor & (gib - 1)) != 0 || lowEnd - cursor < gib) {
+                const auto boundary = std::min(lowEnd, (cursor & ~(gib - 1)) + gib);
+                TryReserveLadder(occupied, cursor, boundary);
+                cursor = boundary;
+                continue;
             }
-            const auto skip = std::min<std::uintptr_t>(page, to - cursor);
-            occupied.emplace_back(cursor, cursor + skip);
-            cursor += skip;
+            if (ReserveFixed(cursor, gib)) {
+                cursor += gib;
+                continue;
+            }
+            TryReserveLadder(occupied, cursor, cursor + gib);
+            cursor += gib;
+        }
+        while (cursor < to && cursor >= RosettaSafeStart) {
+            auto span = (to - cursor) & ~(gib - 1);
+            bool placed = false;
+            while (span >= gib) {
+                if (ReserveFixed(cursor, span)) {
+                    cursor += span;
+                    placed = true;
+                    break;
+                }
+                span >>= 1;
+                span &= ~(gib - 1);
+            }
+            if (placed) continue;
+            const auto ladderEnd = std::min(to, cursor + gib);
+            TryReserveLadder(occupied, cursor, ladderEnd);
+            cursor = ladderEnd;
         }
     }
 
