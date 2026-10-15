@@ -31,6 +31,7 @@
 #include <dispatch/dispatch.h>
 #include <pthread.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <type_traits>
 extern "C" bool Aps5MainThreadIsServing_nid_no_patch();
 extern "C" void Aps5PostMainThreadJob_nid_no_patch(void (*job)(void*), void* context);
 
@@ -41,12 +42,13 @@ extern "C" void Aps5PumpMainRunLoop_nid_no_patch() {
 
 template <class Body>
 void RunWhereAppKitCanDraw(Body&& body) {
+    using Fn = std::remove_reference_t<Body>;
     if (pthread_main_np() != 0) {
         body();
         return;
     }
     struct Job {
-        Body* body;
+        Fn* body;
         std::exception_ptr error;
         dispatch_semaphore_t done;
         static void Run(void* raw) {
