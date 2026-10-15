@@ -1,9 +1,11 @@
 #include "prx/libc/include/exceptions/Runtime.hpp"
+#include "prx/libc/include/Shutdown.hpp"
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <typeinfo>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -254,6 +256,11 @@ void APS5_VABI __cxa_free_exception_nid_postfix(void* object) {
     header->unwind.exception_cleanup = Cleanup;
     ++globals.uncaught;
     _Unwind_RaiseException_nid_postfix(&header->unwind);
+    if (type && std::strcmp(type->name(), typeid(ProcessShutdown).name()) == 0) {
+        const int code = LibcExitCode_nid_no_patch();
+        RawLog("[libc] ProcessShutdown could not unwind; ending the process with status %d\n", code);
+        LibcTerminate_nid_no_patch(code);
+    }
     RawLog("[libc] unhandled exception '%s' thrown from %p\n", type ? type->name() : "?", throwSite);
     __cxa_begin_catch_nid_postfix(&header->unwind);
     InvokeTerminate(header->terminate);

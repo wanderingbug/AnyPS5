@@ -32,6 +32,7 @@ std::exception_ptr shutdownFailure;
 std::stop_source shutdownSource;
 std::atomic<bool> exitRequested{false};
 std::atomic<bool> exitStarted{false};
+std::atomic<int> exitCode{0};
 using GuestExitCallback = void (APS5_VABI*)();
 
 void APS5_VABI RunGuestExitCallback(void* callback) {
@@ -48,7 +49,12 @@ extern "C" void LibcRequestShutdown_nid_postfix() {
     shutdownSource.request_stop();
 }
 
+extern "C" int LibcExitCode_nid_no_patch() {
+    return exitCode.load();
+}
+
 extern "C" void LibcRequestExit_nid_postfix(int code) {
+    exitCode.store(code);
     if (exitRequested.exchange(true)) return;
     LibcRequestShutdown_nid_postfix();
     std::thread([code] { LibcExit_nid_no_patch(code); }).detach();
@@ -85,6 +91,7 @@ extern "C" void LibcRunShutdown_nid_postfix() {
     std::exception_ptr error;
     for (auto it = callbacks.rbegin(); it != callbacks.rend(); ++it) {
         try { (*it)(); }
+        catch (const ProcessShutdown&) {}
         catch (...) { if (!error) error = std::current_exception(); }
     }
     lock.lock();
@@ -114,11 +121,16 @@ extern "C" {
 }
 
 [[noreturn]] void LibcExit_nid_no_patch(int code) {
+    exitCode.store(code);
     exitRequested.store(true);
     if (exitStarted.exchange(true)) LibcAwaitExit_nid_postfix();
-    LibcRunShutdown_nid_postfix();
-    CxaFinalize_nid_no_patch(nullptr);
-    std::exit(code);
+    try {
+        LibcRunShutdown_nid_postfix();
+        CxaFinalize_nid_no_patch(nullptr);
+        std::exit(code);
+    } catch (const ProcessShutdown&) {
+        LibcTerminate_nid_no_patch(code);
+    }
 }
 
 void APS5_VABI exit_nid_postfix(int code) {
