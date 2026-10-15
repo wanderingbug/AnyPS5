@@ -36,6 +36,9 @@ static constexpr int SCE_OK = 0;
 
 static constexpr std::size_t DEFAULT_STACK_SIZE = 1u << 20;
 static constexpr std::size_t HOST_STACK_MARGIN = 1u << 20;
+#ifdef __APPLE__
+static constexpr std::size_t HOST_CALL_STACK = 256u * 1024u + 64u * 1024u;
+#endif
 static constexpr int DETACH_DETACHED = 1;
 static constexpr std::size_t THREAD_NAME_CAPACITY = 32;
 
@@ -415,16 +418,11 @@ void ThreadCancel::EndWait() {
     rsp = reinterpret_cast<std::uintptr_t>(&rsp);
 #endif
     constexpr std::uintptr_t alignment = 16;
-    constexpr std::uintptr_t hostCallStack = 256u * 1024u + 64u * 1024u;
     const auto high = rsp & ~(alignment - 1);
-    if (high < self->stackSize)
-        throw std::runtime_error("Cannot place the guest thread stack");
-    const auto low = high - self->stackSize;
     std::uintptr_t hostLow = 0;
     std::uintptr_t hostHigh = 0;
-    if (!HostStackLimits(&hostLow, &hostHigh) || low < hostLow + hostCallStack || high > hostHigh)
-        throw std::runtime_error("Cannot place the guest thread stack");
-    self->stackAddress = reinterpret_cast<void*>(low);
+    if (HostStackLimits(&hostLow, &hostHigh) && high <= hostHigh && high >= self->stackSize && high - self->stackSize >= hostLow)
+        self->stackAddress = reinterpret_cast<void*>(high - self->stackSize);
     RegisterStack(self);
     return entry(arg);
 }
@@ -635,9 +633,14 @@ int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, Pthread
 #else
     const auto reserve = HostStackReserve();
     const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
-    if (p->stackSize < 16384 || p->stackSize > std::numeric_limits<std::size_t>::max() - reserve - HOST_STACK_MARGIN - page)
+#ifdef __APPLE__
+    const auto belowGuest = HOST_CALL_STACK;
+#else
+    const auto belowGuest = std::size_t{0};
+#endif
+    if (p->stackSize < 16384 || p->stackSize > std::numeric_limits<std::size_t>::max() - reserve - HOST_STACK_MARGIN - belowGuest - page)
         throw std::runtime_error("scePthreadCreate: invalid stack size");
-    const std::size_t nativeStack = (p->stackSize + reserve + HOST_STACK_MARGIN + page - 1) / page * page;
+    const std::size_t nativeStack = (p->stackSize + reserve + HOST_STACK_MARGIN + belowGuest + page - 1) / page * page;
     sigset_t creatorMask;
     pthread_sigmask(SIG_SETMASK, nullptr, &creatorMask);
     args->signalMask = creatorMask;
