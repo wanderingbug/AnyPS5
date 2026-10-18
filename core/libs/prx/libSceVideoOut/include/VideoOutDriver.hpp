@@ -270,6 +270,7 @@ private:
     void vblankEnd();
     void processFlip(FlipRequest& req);
     void triggerEvents(VideoOutConfig& cfg, int eventKind, void* triggerData);
+    void dumpExitFrames();
 
     std::mutex mutex;
     std::mutex shutdownMutex;

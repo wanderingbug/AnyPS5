@@ -654,7 +654,7 @@ extern "C" void Aps5StartGuest_nid_no_patch(void (*entry)(void*, void*), void* s
         try {
             entry(stack, nullptr);
         } catch (const ProcessShutdown&) {
-            LibcTerminate_nid_no_patch(LibcExitCode_nid_no_patch());
+            LibcFinishProcessExit_nid_no_patch(LibcExitCode_nid_no_patch());
         } catch (const std::exception& error) {
             std::fprintf(stderr, "[kernel] guest entry failed: %s\n", error.what());
             std::fflush(stderr);

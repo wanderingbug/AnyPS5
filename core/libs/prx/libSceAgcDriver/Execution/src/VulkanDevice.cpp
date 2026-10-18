@@ -171,15 +171,53 @@ using ResourceCache = Graphics::ResourceCache;
 std::uint32_t DumpScale();
 void WriteFrameBmp(int index, std::uint32_t fullWidth, std::uint32_t fullHeight, std::span<const std::byte> full, std::uint32_t scale);
 
+class FrameDumpWriter;
+
+struct FrameDumpWriters {
+    std::mutex mutex;
+    std::vector<FrameDumpWriter*> writers;
+    void add(FrameDumpWriter* writer) {
+        std::lock_guard lock(mutex);
+        writers.push_back(writer);
+    }
+    void remove(FrameDumpWriter* writer) {
+        std::lock_guard lock(mutex);
+        writers.erase(std::remove(writers.begin(), writers.end(), writer), writers.end());
+    }
+    std::vector<FrameDumpWriter*> copy() {
+        std::lock_guard lock(mutex);
+        return writers;
+    }
+};
+
+FrameDumpWriters& LiveFrameDumpWriters() {
+    static FrameDumpWriters writers;
+    return writers;
+}
+
 class FrameDumpWriter {
 public:
+    FrameDumpWriter() { LiveFrameDumpWriters().add(this); }
+
     ~FrameDumpWriter() {
+        LiveFrameDumpWriters().remove(this);
         {
             std::lock_guard lock(mutex);
             stopping = true;
         }
-        changed.notify_one();
+        changed.notify_all();
         if (worker.joinable()) worker.join();
+    }
+
+    void Drain() {
+        if (worker.joinable() && worker.get_id() == std::this_thread::get_id()) return;
+        std::unique_lock lock(mutex);
+        changed.wait(lock, [this] { return pending.empty() && inflight == 0; });
+    }
+
+    static void DrainAll() {
+        const auto writers = LiveFrameDumpWriters().copy();
+        for (auto* writer : writers) writer->Drain();
     }
 
     void Enqueue(int index, std::uint32_t width, std::uint32_t height, std::uint32_t scale, std::vector<std::byte> pixels) {
@@ -190,7 +228,7 @@ public:
         const auto bytes = pixels.size();
         pending.push_back({index, width, height, scale, std::move(pixels)});
         queuedBytes += bytes;
-        changed.notify_one();
+        changed.notify_all();
     }
 
 private:
@@ -209,14 +247,20 @@ private:
                 {
                     std::unique_lock lock(mutex);
                     changed.wait(lock, [this] { return stopping || !pending.empty(); });
-                    if (pending.empty() && stopping) return;
+                    if (pending.empty() && stopping) {
+                        changed.notify_all();
+                        return;
+                    }
                     batch.swap(pending);
+                    inflight = batch.size();
                 }
                 for (const auto& frame : batch) {
                     WriteFrameBmp(frame.index, frame.width, frame.height, frame.pixels, frame.scale);
                     std::lock_guard lock(mutex);
                     queuedBytes -= frame.pixels.size();
+                    --inflight;
                 }
+                changed.notify_all();
             }
         } catch (const std::exception& error) {
             std::fprintf(stderr, "[gpu] frame dump writer failed: %s\n", error.what());
@@ -230,6 +274,7 @@ private:
     std::deque<Frame> pending;
     std::thread worker;
     std::size_t queuedBytes = 0;
+    std::size_t inflight = 0;
     bool stopping = false;
 };
 
@@ -2622,6 +2667,53 @@ FrameDumps& Dumps() {
     return dumps;
 }
 
+std::mutex dumpMutex;
+
+struct PresentDump {
+    int index = -1;
+    bool cpu = false;
+    explicit operator bool() const { return index >= 0; }
+};
+
+PresentDump ClaimPresentDump() {
+    std::lock_guard lock(dumpMutex);
+    auto& dumps = Dumps();
+    if (dumps.dumped >= dumps.limit || ++dumps.presents % static_cast<std::uint64_t>(dumps.every) != 0) return {};
+    return {dumps.dumped++, dumps.cpu};
+}
+
+void ReleasePresentDump(int index) {
+    std::lock_guard lock(dumpMutex);
+    auto& dumps = Dumps();
+    if (index >= 0 && dumps.dumped == index + 1) --dumps.dumped;
+}
+
+int ClaimExitDump() {
+    std::lock_guard lock(dumpMutex);
+    auto& dumps = Dumps();
+    if (dumps.dumped >= dumps.limit) return -1;
+    return dumps.dumped++;
+}
+
+}
+
+extern "C" void AgcDriverDrainFrameDumps_nid_no_patch() {
+    FrameDumpWriter::DrainAll();
+}
+
+extern "C" void AgcDriverDumpExitFrame_nid_postfix(const AgcDriver::DisplayBuffer& buffer) {
+    AgcDriverDrainFrameDumps_nid_no_patch();
+    const int index = ClaimExitDump();
+    if (index < 0) return;
+    try {
+        const auto pixels = ReadDisplayBuffer(buffer);
+        WriteFrameBmp(index, buffer.width, buffer.height, pixels, DumpScale());
+    } catch (const std::exception& error) {
+        ReleasePresentDump(index);
+        std::fprintf(stderr, "[gpu] exit frame dump failed: %s\n", error.what());
+    } catch (...) {
+        ReleasePresentDump(index);
+    }
 }
 
 bool VulkanDevice::PresentDisplayBuffer(const DisplayBuffer& buffer) {
@@ -2630,17 +2722,17 @@ bool VulkanDevice::PresentDisplayBuffer(const DisplayBuffer& buffer) {
     else Graphics::StorageTexture::FlushDumpSelected("flip");
     if (buffer.tilingMode == 1) {
         const auto pixels = ReadDisplayBuffer(buffer);
-        auto& dumps = Dumps();
+        const auto claimed = ClaimPresentDump();
         bool dumpFrame = false;
-        if (dumps.dumped < dumps.limit && ++dumps.presents % static_cast<std::uint64_t>(dumps.every) == 0) {
-            if (dumps.cpu) WriteFrameBmp(dumps.dumped++, buffer.width, buffer.height, pixels, DumpScale());
+        if (claimed) {
+            if (claimed.cpu) WriteFrameBmp(claimed.index, buffer.width, buffer.height, pixels, DumpScale());
             else {
-                state->nextDumpIndex = dumps.dumped++;
+                state->nextDumpIndex = claimed.index;
                 dumpFrame = true;
             }
         }
         if (!present(buffer.width, buffer.height, true, pixels, nullptr, {}, VK_FILTER_LINEAR, dumpFrame)) {
-            if (dumpFrame) --dumps.dumped;
+            if (dumpFrame) ReleasePresentDump(claimed.index);
             return false;
         }
         return true;
@@ -2682,15 +2774,15 @@ bool VulkanDevice::PresentDisplayBuffer(const DisplayBuffer& buffer) {
         }
     }
     const auto cleared = buffer.dccAddress != 0 && resident == nullptr ? CompressedClearPixel(buffer, bytes) : std::nullopt;
-    auto& dumps = Dumps();
+    const auto claimed = ClaimPresentDump();
     bool dumpFrame = false;
-    if (dumps.dumped < dumps.limit && ++dumps.presents % static_cast<std::uint64_t>(dumps.every) == 0) {
-        if (dumps.cpu) {
+    if (claimed) {
+        if (claimed.cpu) {
             auto full = cleared ? std::vector<std::byte>(static_cast<std::size_t>(buffer.width) * buffer.height * cleared->size()) : ReadDisplayBuffer(buffer);
             for (std::size_t offset = 0; cleared && offset < full.size(); offset += cleared->size()) std::memcpy(full.data() + offset, cleared->data(), cleared->size());
-            WriteFrameBmp(dumps.dumped++, buffer.width, buffer.height, full, DumpScale());
+            WriteFrameBmp(claimed.index, buffer.width, buffer.height, full, DumpScale());
         } else {
-            state->nextDumpIndex = dumps.dumped++;
+            state->nextDumpIndex = claimed.index;
             dumpFrame = true;
             ++gpuDumps;
         }
@@ -2707,7 +2799,7 @@ bool VulkanDevice::PresentDisplayBuffer(const DisplayBuffer& buffer) {
     }
     if (!present(buffer.width, buffer.height, true, {}, cleared ? nullptr : &buffer, resident, filter, dumpFrame, convert, cleared ? &uniform : nullptr)) {
         // A dropped frame (swapchain out of date) keeps the dump numbering contiguous.
-        if (dumpFrame) --dumps.dumped;
+        if (dumpFrame) ReleasePresentDump(claimed.index);
         return false;
     }
     return true;

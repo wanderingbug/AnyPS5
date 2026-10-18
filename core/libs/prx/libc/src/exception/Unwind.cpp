@@ -17,6 +17,7 @@
 #endif
 #ifdef __APPLE__
 #include <cstdio>
+#include <cstring>
 #include <dlfcn.h>
 #include <mach-o/loader.h>
 #endif
@@ -43,6 +44,13 @@ void LogMiss() {
     std::fflush(stderr);
 }
 
+extern "C" bool LibcUnwindMissAtHostThreadRoot_nid_no_patch() {
+    Dl_info image {};
+    if (!dladdr(reinterpret_cast<void*>(miss.pc), &image) || image.dli_sname == nullptr) return false;
+    const char* name = image.dli_sname;
+    return std::strcmp(name, "thread_start") == 0 || std::strcmp(name, "_thread_start") == 0;
+}
+
 Word ResolveStub(Word personality) {
     if (!personality) return 0;
     Dl_info image {};
@@ -56,6 +64,8 @@ Word ResolveStub(Word personality) {
     std::memcpy(&target, reinterpret_cast<const void*>(slot), sizeof(target));
     return target ? target : personality;
 }
+#else
+extern "C" bool LibcUnwindMissAtHostThreadRoot_nid_no_patch() { return false; }
 #endif
 
 _Unwind_Reason_Code CallPersonality(Word personality, _Unwind_Action actions, _Unwind_Exception* exception, _Unwind_Context* context) {
@@ -938,7 +948,13 @@ _Unwind_Reason_Code APS5_VABI _Unwind_RaiseException_nid_postfix(_Unwind_Excepti
 #endif
     _Unwind_Context context;
     LibcCaptureRegisters(context.registers);
-    if (!LibcUnwind::Step(context)) std::abort();
+    if (!LibcUnwind::Step(context)) {
+        if (exception->private_1) {
+            auto stop = reinterpret_cast<_Unwind_Stop_Fn>(exception->private_1);
+            stop(1, _Unwind_Action(_UA_FORCE_UNWIND | _UA_CLEANUP_PHASE | _UA_END_OF_STACK), exception->exception_class, exception, &context, reinterpret_cast<void*>(exception->private_2));
+        }
+        std::abort();
+    }
     LibcUnwind::PhaseTwo(context, exception);
     std::abort();
 }
@@ -997,6 +1013,7 @@ _Unwind_Reason_Code APS5_VABI _Unwind_Backtrace_nid_postfix(_Unwind_Trace_Fn tra
 #else
 
 extern "C" {
+bool LibcUnwindMissAtHostThreadRoot_nid_no_patch() { return false; }
 _Unwind_Reason_Code APS5_VABI _Unwind_RaiseException_nid_postfix(_Unwind_Exception*) { std::abort(); }
 [[noreturn]] void APS5_VABI _Unwind_Resume_nid_postfix(_Unwind_Exception*) { std::abort(); }
 _Unwind_Reason_Code APS5_VABI _Unwind_Resume_or_Rethrow_nid_postfix(_Unwind_Exception*) { std::abort(); }

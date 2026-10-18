@@ -35,5 +35,7 @@ Graphics::DccKeys DisplayBufferKeys(const DisplayBuffer& buffer);
 }
 
 extern "C" std::size_t AgcDriverDisplayBufferSize_nid_postfix(const AgcDriver::DisplayBuffer& buffer);
+extern "C" void AgcDriverDrainFrameDumps_nid_no_patch();
+extern "C" void AgcDriverDumpExitFrame_nid_postfix(const AgcDriver::DisplayBuffer& buffer);
 
 #endif

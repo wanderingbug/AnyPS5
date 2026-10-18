@@ -414,7 +414,30 @@ VideoOutDriver::~VideoOutDriver() {
     if (!stopped) Shutdown();
 }
 
+void VideoOutDriver::dumpExitFrames() {
+    if (!LibcExitRequested_nid_no_patch()) return;
+    std::vector<AgcDriver::DisplayBuffer> buffers;
+    {
+        std::lock_guard lock(mutex);
+        for (const auto& cfg : contexts) {
+            if (!cfg) continue;
+            std::lock_guard cfgLock(cfg->mutex);
+            for (const auto& buffer : cfg->buffers) {
+                if (!buffer.Occupied()) continue;
+                const auto groupIndex = buffer.groupIndex;
+                if (groupIndex < 0 || groupIndex >= VIDEO_OUT_BUFFER_ATTRIBUTE_NUM_MAX || !cfg->groups[groupIndex].occupied) continue;
+                try {
+                    buffers.push_back(DescribeVideoOutBuffer(buffer, cfg->groups[groupIndex]));
+                } catch (const std::exception&) {
+                }
+            }
+        }
+    }
+    for (const auto& buffer : buffers) AgcDriverDumpExitFrame_nid_postfix(buffer);
+}
+
 void VideoOutDriver::Shutdown() {
+    dumpExitFrames();
 #ifdef __APPLE__
     if (presentOnMain) {
         std::lock_guard shutdownLock(shutdownMutex);

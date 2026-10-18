@@ -33,6 +33,7 @@ std::stop_source shutdownSource;
 std::atomic<bool> exitRequested{false};
 std::atomic<bool> exitStarted{false};
 std::atomic<int> exitCode{0};
+std::atomic<void (*)()> processExitFlush{nullptr};
 using GuestExitCallback = void (APS5_VABI*)();
 
 void APS5_VABI RunGuestExitCallback(void* callback) {
@@ -51,6 +52,24 @@ extern "C" void LibcRequestShutdown_nid_postfix() {
 
 extern "C" int LibcExitCode_nid_no_patch() {
     return exitCode.load();
+}
+
+extern "C" bool LibcExitRequested_nid_no_patch() {
+    return exitRequested.load();
+}
+
+extern "C" void LibcRegisterProcessExitFlush_nid_postfix(void (*callback)()) {
+    processExitFlush.store(callback);
+}
+
+void RunProcessExitFlush() {
+    const auto callback = processExitFlush.exchange(nullptr);
+    if (callback == nullptr) return;
+    try {
+        callback();
+    } catch (const ProcessShutdown&) {
+    } catch (...) {
+    }
 }
 
 extern "C" void LibcRequestExit_nid_postfix(int code) {
@@ -114,10 +133,34 @@ extern "C" {
 }
 
 [[noreturn]] void LibcTerminate_nid_no_patch(int code) {
+    RunProcessExitFlush();
 #ifdef _WIN32
     TerminateProcess(GetCurrentProcess(), static_cast<UINT>(code));
 #endif
     std::_Exit(code);
+}
+
+[[noreturn]] void LibcFinishProcessExit_nid_no_patch(int code) {
+    exitCode.store(code);
+    exitRequested.store(true);
+    bool start = false;
+    bool wait = false;
+    {
+        std::lock_guard lock(shutdownMutex);
+        if (!shutdownStarted) start = true;
+        else if (!shutdownFinished && shutdownThread != std::this_thread::get_id()) wait = true;
+    }
+    if (start) {
+        try {
+            LibcRunShutdown_nid_postfix();
+        } catch (const ProcessShutdown&) {
+        } catch (...) {
+        }
+    } else if (wait) {
+        std::unique_lock lock(shutdownMutex);
+        shutdownChanged.wait(lock, [] { return shutdownFinished; });
+    }
+    LibcTerminate_nid_no_patch(code);
 }
 
 [[noreturn]] void LibcExit_nid_no_patch(int code) {
@@ -129,7 +172,7 @@ extern "C" {
         CxaFinalize_nid_no_patch(nullptr);
         std::exit(code);
     } catch (const ProcessShutdown&) {
-        LibcTerminate_nid_no_patch(code);
+        LibcFinishProcessExit_nid_no_patch(code);
     }
 }
 

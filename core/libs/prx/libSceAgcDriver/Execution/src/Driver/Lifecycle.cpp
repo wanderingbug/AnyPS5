@@ -1,4 +1,5 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Driver.hpp"
+#include "prx/libSceAgcDriver/Execution/include/DisplayBuffer.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Diagnostics.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Shaders/ShaderRegistry.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
@@ -59,6 +60,7 @@ Driver::Driver() {
     ShaderMemory::SetWaitedMsProvider(&Graphics::Recorder::ThreadWaitedMs);
     try {
         LibcRegisterShutdown_nid_postfix([] { Driver::Get().Shutdown(); });
+        LibcRegisterProcessExitFlush_nid_postfix(AgcDriverDrainFrameDumps_nid_no_patch);
     } catch (...) {
         stop();
         throw;
