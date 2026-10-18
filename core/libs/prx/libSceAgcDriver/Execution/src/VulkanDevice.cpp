@@ -33,6 +33,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/TextureFormat.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/Shutdown.hpp"
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -210,9 +211,13 @@ public:
     }
 
     void Drain() {
+        if (LibcHostShutdownAbandoned_nid_no_patch()) return;
         if (worker.joinable() && worker.get_id() == std::this_thread::get_id()) return;
         std::unique_lock lock(mutex);
-        changed.wait(lock, [this] { return pending.empty() && inflight == 0; });
+        while (!(pending.empty() && inflight == 0)) {
+            if (LibcHostShutdownAbandoned_nid_no_patch()) return;
+            changed.wait_for(lock, std::chrono::milliseconds(20));
+        }
     }
 
     static void DrainAll() {
@@ -2702,11 +2707,17 @@ extern "C" void AgcDriverDrainFrameDumps_nid_no_patch() {
 }
 
 extern "C" void AgcDriverDumpExitFrame_nid_postfix(const AgcDriver::DisplayBuffer& buffer) {
-    AgcDriverDrainFrameDumps_nid_no_patch();
+    if (!LibcHostShutdownAbandoned_nid_no_patch()) AgcDriverDrainFrameDumps_nid_no_patch();
     const int index = ClaimExitDump();
     if (index < 0) return;
     try {
-        const auto pixels = ReadDisplayBuffer(buffer);
+        std::vector<std::byte> pixels;
+        if (LibcHostShutdownAbandoned_nid_no_patch()) {
+            const auto size = DisplayBufferSize(buffer);
+            pixels = DecodeDisplayBuffer(buffer, {reinterpret_cast<const std::byte*>(buffer.address), size});
+        } else {
+            pixels = ReadDisplayBuffer(buffer);
+        }
         WriteFrameBmp(index, buffer.width, buffer.height, pixels, DumpScale());
     } catch (const std::exception& error) {
         ReleasePresentDump(index);

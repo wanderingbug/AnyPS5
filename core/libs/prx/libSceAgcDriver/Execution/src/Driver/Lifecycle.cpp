@@ -7,7 +7,9 @@
 #include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
+#include <chrono>
 #include <cstdio>
+#include <thread>
 
 namespace AgcDriver::DriverDetail {
 
@@ -23,17 +25,33 @@ Driver::~Driver() {
 
 void Driver::Shutdown() {
     stop();
+    if (LibcHostShutdownAbandoned_nid_no_patch()) LibcTerminate_nid_no_patch(LibcExitCode_nid_no_patch());
     std::lock_guard lock(mutex);
     rethrowFailure();
 }
 
+namespace {
+
+template <typename Mutex>
+void LockOrEndIfAbandoned(Mutex& mutex) {
+    while (!mutex.try_lock()) {
+        if (LibcHostShutdownAbandoned_nid_no_patch()) LibcTerminate_nid_no_patch(LibcExitCode_nid_no_patch());
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
+}
+
 void Driver::stop() {
+    if (LibcHostShutdownAbandoned_nid_no_patch()) LibcTerminate_nid_no_patch(LibcExitCode_nid_no_patch());
     require(!onWorkerThread(), "worker cannot stop itself");
-    std::lock_guard shutdownLock(shutdownMutex);
+    LockOrEndIfAbandoned(shutdownMutex);
+    std::lock_guard shutdownLock(shutdownMutex, std::adopt_lock);
     if (stopped) return;
     LibcRequestShutdown_nid_postfix();
+    LockOrEndIfAbandoned(mutex);
     {
-        std::lock_guard lock(mutex);
+        std::lock_guard lock(mutex, std::adopt_lock);
         stopping = true;
         for (auto& [queue, worker] : workers) {
             worker.pending.clear();
@@ -43,11 +61,21 @@ void Driver::stop() {
     }
     changed.notify_all();
     for (auto& [queue, worker] : workers) {
-        if (worker.thread.joinable()) worker.thread.join();
+        if (!worker.thread.joinable()) continue;
+        while (!worker.exited.load(std::memory_order_acquire)) {
+            if (LibcHostShutdownAbandoned_nid_no_patch()) {
+                worker.thread.detach();
+                LibcTerminate_nid_no_patch(LibcExitCode_nid_no_patch());
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        worker.thread.join();
     }
+    if (LibcHostShutdownAbandoned_nid_no_patch()) LibcTerminate_nid_no_patch(LibcExitCode_nid_no_patch());
     StopWorkerSampler();
     CloseRegistrationPreparation();
-    std::lock_guard gpuLock(GuestMemory::GpuMutex());
+    LockOrEndIfAbandoned(GuestMemory::GpuMutex());
+    std::lock_guard gpuLock(GuestMemory::GpuMutex(), std::adopt_lock);
     device.Reset();
     replacedDevices.clear();
     Graphics::ShutdownGuestBufferWorkers();

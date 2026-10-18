@@ -253,6 +253,7 @@ public:
 
     int Open(int busType);
     bool Close(int handle);
+    void RememberExitFrames(const VideoOutConfig& cfg);
     std::shared_ptr<VideoOutConfig> GetConfig(int handle);
     bool IsOpen(int handle);
     bool HasConfig(int handle);
@@ -272,8 +273,17 @@ private:
     void triggerEvents(VideoOutConfig& cfg, int eventKind, void* triggerData);
     void dumpExitFrames();
 
+    struct ExitFrameNote {
+        const VideoOutConfig* config = nullptr;
+        std::vector<AgcDriver::DisplayBuffer> buffers;
+    };
+
     std::mutex mutex;
     std::mutex shutdownMutex;
+    std::mutex exitFrameMutex;
+    std::vector<ExitFrameNote> exitFrames;
+    std::atomic<bool> presentReturned{false};
+    std::atomic<bool> vblankReturned{false};
     bool stopped = false;
     std::array<std::shared_ptr<VideoOutConfig>, VIDEO_OUT_NUM_MAX> contexts;
     std::array<std::shared_ptr<AgcDriver::IVideoOutput>, VIDEO_OUT_NUM_MAX> outputs;

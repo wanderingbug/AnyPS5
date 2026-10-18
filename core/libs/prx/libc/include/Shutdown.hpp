@@ -17,5 +17,7 @@ extern "C" [[noreturn]] void LibcFinishProcessExit_nid_no_patch(int code);
 extern "C" int LibcExitCode_nid_no_patch();
 extern "C" bool LibcExitRequested_nid_no_patch();
 extern "C" void LibcRegisterProcessExitFlush_nid_postfix(void (*callback)());
+extern "C" void LibcNoteHostShutdownAbandoned_nid_no_patch();
+extern "C" bool LibcHostShutdownAbandoned_nid_no_patch();
 
 #endif

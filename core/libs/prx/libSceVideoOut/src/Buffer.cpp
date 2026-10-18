@@ -105,6 +105,7 @@ int APS5_VABI sceVideoOutRegisterBuffers2(int handle, int setIndex, int bufferIn
     for (int i = 0; i < bufferNum; i++) {
         cfg->buffers[bufferIndexStart + i] = registered[i];
     }
+    VideoOutDriver::Get().RememberExitFrames(*cfg);
     return 0;
 } catch (const ProcessShutdown&) {
     LibcAwaitExit_nid_postfix();
@@ -138,6 +139,7 @@ int APS5_VABI sceVideoOutSubmitChangeBufferAttribute2(int handle, int setIndex, 
         AgcDriverCheckGuestMemory_nid_postfix(reinterpret_cast<const void*>(display.address), AgcDriverDisplayBufferSize_nid_postfix(display), 65536);
     }
     cfg->groups[setIndex] = group;
+    VideoOutDriver::Get().RememberExitFrames(*cfg);
     return 0;
 } catch (const ProcessShutdown&) {
     LibcAwaitExit_nid_postfix();
@@ -168,6 +170,7 @@ int APS5_VABI sceVideoOutUnregisterBuffers(int handle, int setIndex) try {
             buf = VideoOutBuffer{};
         }
     }
+    VideoOutDriver::Get().RememberExitFrames(*cfg);
     return 0;
 } catch (const ProcessShutdown&) {
     LibcAwaitExit_nid_postfix();

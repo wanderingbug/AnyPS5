@@ -9,11 +9,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
-#include <pthread.h>
 #include <unistd.h>
-#endif
-#ifdef __linux__
-#include <sys/syscall.h>
 #endif
 
 namespace LibcException {
@@ -235,33 +231,13 @@ bool Match(const std::type_info* caught, const std::type_info* thrown, void*& ob
 }
 
 extern "C" bool LibcUnwindMissAtHostThreadRoot_nid_no_patch();
-extern "C" _Unwind_Reason_Code _Unwind_ForcedUnwind_nid_postfix(_Unwind_Exception*, _Unwind_Stop_Fn, void*);
 
-[[noreturn]] static void EndHostThread();
-
-static _Unwind_Reason_Code EndHostThreadStop(int, _Unwind_Action action, std::uint64_t, _Unwind_Exception*, _Unwind_Context*, void*) {
-    if ((action & _UA_END_OF_STACK) != 0) EndHostThread();
-    return _URC_NO_REASON;
-}
-
-[[noreturn]] static void EndHostThread() {
-    static thread_local bool ending = false;
-    if (ending) {
+[[noreturn]] static void PauseAbandonedHostThread() {
+    LibcNoteHostShutdownAbandoned_nid_no_patch();
+    LibcException::RawLog("[libc] ProcessShutdown could not unwind; ending the host thread\n");
 #if defined(_WIN32)
-        ExitThread(0);
-#elif defined(__linux__)
-        syscall(SYS_exit, 0);
-#else
-        for (;;) pause();
-#endif
-    }
-    ending = true;
-    LibcException::globals.uncaught = 0;
-#if defined(_WIN32)
-    ExitThread(0);
     for (;;) Sleep(1000);
 #else
-    pthread_exit(nullptr);
     for (;;) pause();
 #endif
 }
@@ -296,11 +272,7 @@ void APS5_VABI __cxa_free_exception_nid_postfix(void* object) {
     _Unwind_RaiseException_nid_postfix(&header->unwind);
     if (type && std::strcmp(type->name(), typeid(ProcessShutdown).name()) == 0) {
         const int code = LibcExitCode_nid_no_patch();
-        if (LibcUnwindMissAtHostThreadRoot_nid_no_patch()) {
-            RawLog("[libc] ProcessShutdown could not unwind; ending the host thread\n");
-            _Unwind_ForcedUnwind_nid_postfix(&header->unwind, EndHostThreadStop, nullptr);
-            EndHostThread();
-        }
+        if (LibcUnwindMissAtHostThreadRoot_nid_no_patch()) PauseAbandonedHostThread();
         RawLog("[libc] ProcessShutdown could not unwind; ending the process with status %d\n", code);
         LibcFinishProcessExit_nid_no_patch(code);
     }

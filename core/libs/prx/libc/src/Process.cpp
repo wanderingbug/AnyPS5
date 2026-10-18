@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cerrno>
+#include <chrono>
 #include <condition_variable>
 #include <exception>
 #include <mutex>
@@ -34,6 +35,7 @@ std::atomic<bool> exitRequested{false};
 std::atomic<bool> exitStarted{false};
 std::atomic<int> exitCode{0};
 std::atomic<void (*)()> processExitFlush{nullptr};
+std::atomic<bool> hostShutdownAbandoned{false};
 using GuestExitCallback = void (APS5_VABI*)();
 
 void APS5_VABI RunGuestExitCallback(void* callback) {
@@ -62,7 +64,16 @@ extern "C" void LibcRegisterProcessExitFlush_nid_postfix(void (*callback)()) {
     processExitFlush.store(callback);
 }
 
+extern "C" void LibcNoteHostShutdownAbandoned_nid_no_patch() {
+    hostShutdownAbandoned.store(true, std::memory_order_release);
+}
+
+extern "C" bool LibcHostShutdownAbandoned_nid_no_patch() {
+    return hostShutdownAbandoned.load(std::memory_order_acquire);
+}
+
 void RunProcessExitFlush() {
+    if (hostShutdownAbandoned.load(std::memory_order_acquire)) return;
     const auto callback = processExitFlush.exchange(nullptr);
     if (callback == nullptr) return;
     try {
@@ -118,6 +129,7 @@ extern "C" void LibcRunShutdown_nid_postfix() {
     shutdownFinished = true;
     lock.unlock();
     shutdownChanged.notify_all();
+    if (hostShutdownAbandoned.load(std::memory_order_acquire)) LibcTerminate_nid_no_patch(exitCode.load());
     if (error) std::rethrow_exception(error);
 }
 
@@ -158,7 +170,13 @@ extern "C" {
         }
     } else if (wait) {
         std::unique_lock lock(shutdownMutex);
-        shutdownChanged.wait(lock, [] { return shutdownFinished; });
+        while (!shutdownFinished) {
+            if (hostShutdownAbandoned.load(std::memory_order_acquire)) {
+                lock.unlock();
+                LibcTerminate_nid_no_patch(code);
+            }
+            shutdownChanged.wait_for(lock, std::chrono::milliseconds(20));
+        }
     }
     LibcTerminate_nid_no_patch(code);
 }
