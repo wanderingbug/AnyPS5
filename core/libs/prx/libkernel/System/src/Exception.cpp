@@ -304,8 +304,88 @@ bool RaiseOn(Pthread thread, GuestExceptionHandler handler, int signum) {
 }
 #else
 constexpr int HostSignal = SIGUSR1;
+#if !defined(__APPLE__)
 constexpr std::size_t FxsaveRegisterBytes = 416;
+#endif
 
+#if defined(__APPLE__)
+void FromHost(const mcontext_t& host, GuestMcontext& m) {
+    if (host == nullptr) throw std::runtime_error("sceKernelRaiseException: host mcontext is null");
+    const auto& thread = host->__ss;
+    const auto& fault = host->__es;
+    m.rdi = thread.__rdi;
+    m.rsi = thread.__rsi;
+    m.rdx = thread.__rdx;
+    m.rcx = thread.__rcx;
+    m.r8 = thread.__r8;
+    m.r9 = thread.__r9;
+    m.rax = thread.__rax;
+    m.rbx = thread.__rbx;
+    m.rbp = thread.__rbp;
+    m.r10 = thread.__r10;
+    m.r11 = thread.__r11;
+    m.r12 = thread.__r12;
+    m.r13 = thread.__r13;
+    m.r14 = thread.__r14;
+    m.r15 = thread.__r15;
+    m.rip = thread.__rip;
+    m.rsp = thread.__rsp;
+    m.rflags = thread.__rflags;
+    m.cs = thread.__cs;
+    m.fs = static_cast<std::uint16_t>(thread.__fs);
+    m.gs = static_cast<std::uint16_t>(thread.__gs);
+    m.trapno = fault.__trapno;
+    m.err = fault.__err;
+    m.addr = fault.__faultvaddr;
+    m.len = sizeof(GuestMcontext);
+    auto* fx = reinterpret_cast<unsigned char*>(m.fpstate);
+    const auto& fs = host->__fs;
+    std::memset(fx, 0, 512);
+    std::memcpy(fx + 0, &fs.__fpu_fcw, 2);
+    std::memcpy(fx + 2, &fs.__fpu_fsw, 2);
+    fx[4] = fs.__fpu_ftw;
+    std::memcpy(fx + 6, &fs.__fpu_fop, 2);
+    std::memcpy(fx + 24, &fs.__fpu_mxcsr, 4);
+    std::memcpy(fx + 28, &fs.__fpu_mxcsrmask, 4);
+    const auto* xmm = &fs.__fpu_xmm0;
+    for (int index = 0; index < 16; ++index) std::memcpy(fx + 160 + static_cast<std::size_t>(index) * 16, xmm[index].__xmm_reg, 16);
+    m.fpformat = 1;
+    m.ownedfp = 1;
+}
+
+void ToHost(const GuestMcontext& m, mcontext_t& host) {
+    if (host == nullptr) throw std::runtime_error("sceKernelRaiseException: host mcontext is null");
+    auto& thread = host->__ss;
+    thread.__rdi = m.rdi;
+    thread.__rsi = m.rsi;
+    thread.__rdx = m.rdx;
+    thread.__rcx = m.rcx;
+    thread.__r8 = m.r8;
+    thread.__r9 = m.r9;
+    thread.__rax = m.rax;
+    thread.__rbx = m.rbx;
+    thread.__rbp = m.rbp;
+    thread.__r10 = m.r10;
+    thread.__r11 = m.r11;
+    thread.__r12 = m.r12;
+    thread.__r13 = m.r13;
+    thread.__r14 = m.r14;
+    thread.__r15 = m.r15;
+    thread.__rip = m.rip;
+    thread.__rsp = m.rsp;
+    thread.__rflags = m.rflags;
+    const auto* fx = reinterpret_cast<const unsigned char*>(m.fpstate);
+    auto& fs = host->__fs;
+    std::memcpy(&fs.__fpu_fcw, fx + 0, 2);
+    std::memcpy(&fs.__fpu_fsw, fx + 2, 2);
+    fs.__fpu_ftw = fx[4];
+    std::memcpy(&fs.__fpu_fop, fx + 6, 2);
+    std::memcpy(&fs.__fpu_mxcsr, fx + 24, 4);
+    std::memcpy(&fs.__fpu_mxcsrmask, fx + 28, 4);
+    auto* xmm = &fs.__fpu_xmm0;
+    for (int index = 0; index < 16; ++index) std::memcpy(xmm[index].__xmm_reg, fx + 160 + static_cast<std::size_t>(index) * 16, 16);
+}
+#else
 void FromHost(const mcontext_t& host, GuestMcontext& m) {
     const auto* g = host.gregs;
     m.rdi = g[REG_RDI];
@@ -355,6 +435,7 @@ void ToHost(const GuestMcontext& m, mcontext_t& host) {
     g[REG_EFL] = static_cast<greg_t>(m.rflags);
     if (host.fpregs != nullptr) std::memcpy(host.fpregs, m.fpstate, FxsaveRegisterBytes);
 }
+#endif
 
 void Deliver(int, siginfo_t*, void* context) {
     const auto handler = Handler(RaisedSignal);

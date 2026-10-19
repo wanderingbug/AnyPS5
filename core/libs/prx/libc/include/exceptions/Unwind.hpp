@@ -111,6 +111,11 @@ struct Frame {
     std::intptr_t dataAlign {};
     unsigned returnRegister {};
     bool signal {};
+#ifdef __APPLE__
+    bool useCompact {};
+    std::uint32_t compactEncoding {};
+    Word functionStart {};
+#endif
 #ifdef _WIN32
     bool foreign {};
     _Unwind_Context caller {};

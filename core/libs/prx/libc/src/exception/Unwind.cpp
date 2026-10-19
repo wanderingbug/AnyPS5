@@ -24,6 +24,7 @@
 #include <utility>
 #endif
 #ifdef __APPLE__
+#include <cstring>
 #include <dlfcn.h>
 #include <mach-o/getsect.h>
 #include <mach-o/loader.h>
@@ -105,6 +106,22 @@ extern "C" void _Unwind_DeleteException(_Unwind_Exception*);
 #endif
 
 namespace LibcUnwind {
+#ifdef __APPLE__
+Word ResolveStub(Word personality) {
+    if (!personality) return 0;
+    Dl_info image {};
+    if (!dladdr(reinterpret_cast<void*>(personality), &image) || image.dli_fbase == nullptr) return 0;
+    const auto* code = reinterpret_cast<const Byte*>(personality);
+    if (code[0] != 0xff || code[1] != 0x25) return personality;
+    std::int32_t displacement = 0;
+    std::memcpy(&displacement, code + 2, 4);
+    const auto slot = static_cast<Word>(static_cast<std::intptr_t>(personality) + 6 + displacement);
+    Word target = 0;
+    std::memcpy(&target, reinterpret_cast<const void*>(slot), sizeof(target));
+    return target ? target : personality;
+}
+#endif
+
 _Unwind_Reason_Code CallPersonality(Word personality, _Unwind_Action actions, _Unwind_Exception* exception, _Unwind_Context* context) {
 #ifdef _WIN32
     const auto* code = reinterpret_cast<const Byte*>(personality);
@@ -118,6 +135,28 @@ _Unwind_Reason_Code CallPersonality(Word personality, _Unwind_Action actions, _U
         return __gxx_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
     if (personality == reinterpret_cast<Word>(__gcc_personality_v0_nid_postfix) || personality == reinterpret_cast<Word>(__gcc_personality_v0))
         return __gcc_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
+#ifdef __APPLE__
+    {
+        Dl_info mapped {};
+        if (!dladdr(reinterpret_cast<void*>(personality), &mapped) || mapped.dli_fbase == nullptr)
+            return (actions & _UA_SEARCH_PHASE) ? _URC_FATAL_PHASE1_ERROR : _URC_FATAL_PHASE2_ERROR;
+    }
+    personality = ResolveStub(personality);
+    if (personality == 0) return (actions & _UA_SEARCH_PHASE) ? _URC_FATAL_PHASE1_ERROR : _URC_FATAL_PHASE2_ERROR;
+    if (personality == reinterpret_cast<Word>(__gxx_personality_v0_nid_postfix) || personality == reinterpret_cast<Word>(__gxx_personality_v0))
+        return __gxx_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
+    if (personality == reinterpret_cast<Word>(__gcc_personality_v0_nid_postfix) || personality == reinterpret_cast<Word>(__gcc_personality_v0))
+        return __gcc_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
+    Dl_info info {};
+    const char* name = nullptr;
+    if (dladdr(reinterpret_cast<void*>(personality), &info)) name = info.dli_sname;
+    if (name && std::strstr(name, "gcc_personality_v0"))
+        return __gcc_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
+    if (name && std::strstr(name, "objc")) return _URC_CONTINUE_UNWIND;
+    if (!name || std::strstr(name, "personality"))
+        return __gxx_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
+    return _URC_CONTINUE_UNWIND;
+#endif
     return (actions & _UA_SEARCH_PHASE) ? _URC_FATAL_PHASE1_ERROR : _URC_FATAL_PHASE2_ERROR;
 }
 #if defined(__linux__) || defined(__APPLE__)
@@ -284,6 +323,320 @@ bool VirtualUnwind(const _Unwind_Context& context, _Unwind_Context& caller) {
 }
 #endif
 
+#ifdef __APPLE__
+struct AppleSections { Word base {}; const Byte* unwind {}; unsigned long unwindSize {}; const Byte* eh {}; unsigned long ehSize {}; };
+
+bool AppleSectionsOf(Word pc, AppleSections& out) {
+    Dl_info image {};
+    if (!dladdr(reinterpret_cast<void*>(pc), &image) || !image.dli_fbase) return false;
+    const auto* header = static_cast<const mach_header_64*>(image.dli_fbase);
+    if (header->magic != MH_MAGIC_64) return false;
+    out.base = reinterpret_cast<Word>(header);
+    const Byte* command = reinterpret_cast<const Byte*>(header + 1);
+    Word slide = 0;
+    for (std::uint32_t index = 0; index < header->ncmds; ++index) {
+        const auto* load = reinterpret_cast<const load_command*>(command);
+        if (load->cmdsize < 8 || command + load->cmdsize < command) return false;
+        if (load->cmd == LC_SEGMENT_64) {
+            const auto* segment = reinterpret_cast<const segment_command_64*>(load);
+            if (std::strcmp(segment->segname, "__TEXT") == 0) slide = out.base - static_cast<Word>(segment->vmaddr);
+            const auto* section = reinterpret_cast<const section_64*>(segment + 1);
+            for (std::uint32_t part = 0; part < segment->nsects; ++part, ++section) {
+                const auto* address = reinterpret_cast<const Byte*>(static_cast<Word>(section->addr) + slide);
+                if (std::strncmp(section->sectname, "__unwind_info", 16) == 0) {
+                    out.unwind = address;
+                    out.unwindSize = static_cast<unsigned long>(section->size);
+                } else if (std::strncmp(section->sectname, "__eh_frame", 16) == 0) {
+                    out.eh = address;
+                    out.ehSize = static_cast<unsigned long>(section->size);
+                }
+            }
+        }
+        command += load->cmdsize;
+    }
+    return out.unwind != nullptr;
+}
+
+std::uint32_t Section32(const Byte* data, unsigned long size, unsigned long offset, bool& ok) {
+    std::uint32_t value = 0;
+    if (!ok || offset > size || size - offset < 4) { ok = false; return 0; }
+    std::memcpy(&value, data + offset, 4);
+    return value;
+}
+
+bool AppleCompact(_Unwind_Context& context, Frame& frame, Lookup& query) {
+    AppleSections sections {};
+    if (!AppleSectionsOf(query.pc, sections)) return false;
+    const auto base = sections.base;
+    if (query.pc < base) return false;
+    const auto* info = sections.unwind;
+    const auto infoSize = sections.unwindSize;
+    if (!info || infoSize < 28) return false;
+    bool ok = true;
+    if (Section32(info, infoSize, 0, ok) != 1 || !ok) return false;
+    const auto commonOffset = Section32(info, infoSize, 4, ok);
+    const auto commonCount = Section32(info, infoSize, 8, ok);
+    const auto personalityOffset = Section32(info, infoSize, 12, ok);
+    const auto personalityCount = Section32(info, infoSize, 16, ok);
+    const auto indexOffset = Section32(info, infoSize, 20, ok);
+    const auto indexCount = Section32(info, infoSize, 24, ok);
+    if (!ok || indexCount < 2) return false;
+    const auto target = static_cast<std::uint32_t>(query.pc - base);
+    std::uint32_t low = 0, high = indexCount;
+    const auto last = indexCount - 1;
+    while (low < high) {
+        const auto mid = low + (high - low) / 2;
+        const auto start = Section32(info, infoSize, indexOffset + static_cast<unsigned long>(mid) * 12u, ok);
+        if (!ok) return false;
+        if (start <= target) {
+            const auto follows = mid == last ? target : Section32(info, infoSize, indexOffset + static_cast<unsigned long>(mid + 1) * 12u, ok);
+            if (!ok) return false;
+            if (mid == last || follows > target) { low = mid; break; }
+            low = mid + 1;
+        } else high = mid;
+    }
+    if (!ok || low >= last) return false;
+    const auto pageFunction = Section32(info, infoSize, indexOffset + static_cast<unsigned long>(low) * 12u, ok);
+    const auto nextFunction = Section32(info, infoSize, indexOffset + static_cast<unsigned long>(low + 1) * 12u, ok);
+    const auto pageOffset = Section32(info, infoSize, indexOffset + static_cast<unsigned long>(low) * 12u + 4u, ok);
+    const auto lsdaOffset = Section32(info, infoSize, indexOffset + static_cast<unsigned long>(low) * 12u + 8u, ok);
+    const auto lsdaEnd = Section32(info, infoSize, indexOffset + static_cast<unsigned long>(low + 1) * 12u + 8u, ok);
+    if (!ok || pageOffset == 0) return false;
+    const auto pageKind = Section32(info, infoSize, pageOffset, ok);
+    const auto pagePacked = Section32(info, infoSize, pageOffset + 4u, ok);
+    if (!ok) return false;
+    const auto entryOffset = pagePacked & 0xffffu;
+    const auto entryCount = pagePacked >> 16;
+    if (entryCount == 0) return false;
+    std::uint32_t encoding = 0;
+    Word funcStart = 0, funcEnd = 0;
+    if (pageKind == 2) {
+        low = 0;
+        high = entryCount;
+        while (low < high) {
+            const auto mid = low + (high - low) / 2;
+            const auto start = Section32(info, infoSize, pageOffset + entryOffset + static_cast<unsigned long>(mid) * 8u, ok);
+            if (!ok) return false;
+            if (start <= target) {
+                if (mid + 1 == entryCount) { low = mid; break; }
+                const auto follows = Section32(info, infoSize, pageOffset + entryOffset + static_cast<unsigned long>(mid + 1) * 8u, ok);
+                if (!ok) return false;
+                if (follows > target) { low = mid; break; }
+                low = mid + 1;
+            } else high = mid;
+        }
+        if (low >= entryCount) return false;
+        const auto start = Section32(info, infoSize, pageOffset + entryOffset + static_cast<unsigned long>(low) * 8u, ok);
+        encoding = Section32(info, infoSize, pageOffset + entryOffset + static_cast<unsigned long>(low) * 8u + 4u, ok);
+        if (!ok) return false;
+        funcStart = base + start;
+        funcEnd = low + 1 < entryCount ? base + Section32(info, infoSize, pageOffset + entryOffset + static_cast<unsigned long>(low + 1) * 8u, ok) : base + nextFunction;
+    } else if (pageKind == 3) {
+        const auto encodingPacked = Section32(info, infoSize, pageOffset + 8u, ok);
+        if (!ok) return false;
+        const auto encodingsOffset = encodingPacked & 0xffffu;
+        const auto pageTarget = target - pageFunction;
+        const auto pageLast = entryCount - 1;
+        low = 0;
+        high = entryCount;
+        while (low < high) {
+            const auto mid = low + (high - low) / 2;
+            const auto entry = Section32(info, infoSize, pageOffset + entryOffset + static_cast<unsigned long>(mid) * 4u, ok);
+            if (!ok) return false;
+            const auto start = entry & 0x00ffffffu;
+            if (start <= pageTarget) {
+                if (mid == pageLast) { low = mid; break; }
+                const auto follows = Section32(info, infoSize, pageOffset + entryOffset + static_cast<unsigned long>(mid + 1) * 4u, ok) & 0x00ffffffu;
+                if (!ok) return false;
+                if (follows > pageTarget) { low = mid; break; }
+                low = mid + 1;
+            } else high = mid;
+        }
+        if (low >= entryCount) return false;
+        const auto entry = Section32(info, infoSize, pageOffset + entryOffset + static_cast<unsigned long>(low) * 4u, ok);
+        if (!ok) return false;
+        funcStart = base + pageFunction + (entry & 0x00ffffffu);
+        if (low < pageLast) funcEnd = base + pageFunction + (Section32(info, infoSize, pageOffset + entryOffset + static_cast<unsigned long>(low + 1) * 4u, ok) & 0x00ffffffu);
+        else funcEnd = base + nextFunction;
+        const auto encodingIndex = entry >> 24;
+        if (encodingIndex < commonCount) encoding = Section32(info, infoSize, commonOffset + static_cast<unsigned long>(encodingIndex) * 4u, ok);
+        else encoding = Section32(info, infoSize, pageOffset + encodingsOffset + static_cast<unsigned long>(encodingIndex - commonCount) * 4u, ok);
+    } else return false;
+    if (!ok || query.pc < funcStart || query.pc > funcEnd || funcEnd < funcStart) return false;
+    Word lsda = 0;
+    if (encoding & 0x40000000u) {
+        if (lsdaEnd < lsdaOffset) return false;
+        const auto count = (lsdaEnd - lsdaOffset) / 8u;
+        const auto funcOff = static_cast<std::uint32_t>(funcStart - base);
+        low = 0;
+        high = count;
+        while (low < high) {
+            const auto mid = low + (high - low) / 2;
+            const auto start = Section32(info, infoSize, lsdaOffset + static_cast<unsigned long>(mid) * 8u, ok);
+            if (!ok) return false;
+            if (start == funcOff) {
+                lsda = base + Section32(info, infoSize, lsdaOffset + static_cast<unsigned long>(mid) * 8u + 4u, ok);
+                break;
+            }
+            if (start < funcOff) low = mid + 1;
+            else high = mid;
+        }
+        if (!ok || lsda == 0) return false;
+    }
+    Word personality = 0;
+    const auto personalityIndex = (encoding >> 28) & 3u;
+    if (personalityIndex != 0) {
+        if (personalityIndex - 1 >= personalityCount) return false;
+        const auto delta = static_cast<std::int32_t>(Section32(info, infoSize, personalityOffset + static_cast<unsigned long>(personalityIndex - 1) * 4u, ok));
+        if (!ok) return false;
+        personality = static_cast<Word>(static_cast<std::intptr_t>(base) + delta);
+    }
+    if ((encoding & 0x0f000000u) == 0x04000000u) {
+        const auto ehOffset = encoding & 0x00ffffffu;
+        if (sections.eh && ehOffset < sections.ehSize) {
+            query.fde = sections.eh + ehOffset;
+            query.text = base;
+            query.data = base;
+            Frame decoded {};
+            if (DecodeCandidate(context, decoded, query)) {
+                frame = decoded;
+                return true;
+            }
+        }
+        query.fde = nullptr;
+        frame = {};
+        frame.useCompact = true;
+        frame.compactEncoding = 0x01000000u;
+        frame.functionStart = funcStart;
+        frame.personality = personality;
+        frame.lsda = lsda;
+        frame.returnRegister = 16;
+        context.region = funcStart;
+        context.lsda = lsda;
+        context.personality = personality;
+        context.textBase = base;
+        context.dataBase = base;
+        return true;
+    }
+    frame = {};
+    frame.useCompact = true;
+    frame.compactEncoding = (encoding & 0x0f000000u) == 0 ? 0u : encoding;
+    frame.functionStart = funcStart;
+    frame.personality = personality;
+    frame.lsda = lsda;
+    frame.returnRegister = 16;
+    context.region = funcStart;
+    context.lsda = lsda;
+    context.personality = personality;
+    context.textBase = base;
+    context.dataBase = base;
+    return true;
+}
+
+bool CompactRules(Frame& frame, Rules& rules) {
+    const auto encoding = frame.compactEncoding;
+    const auto mode = encoding & 0x0f000000u;
+    rules = {};
+    frame.returnRegister = 16;
+    auto save = [&](unsigned reg, std::intptr_t offset) {
+        if (reg < RuleCount) rules.registers[reg] = {1, offset};
+    };
+    save(16, -8);
+    if (mode == 0x01000000u) {
+        rules.cfaRegister = 6;
+        rules.cfaOffset = 16;
+        save(6, -16);
+        auto locations = encoding & 0x7fffu;
+        const auto slot = static_cast<std::intptr_t>((encoding >> 16) & 0xffu);
+        for (int index = 0; index < 5; ++index) {
+            unsigned reg = 0;
+            switch (locations & 7u) {
+            case 1: reg = 3; break;
+            case 2: reg = 12; break;
+            case 3: reg = 13; break;
+            case 4: reg = 14; break;
+            case 5: reg = 15; break;
+            case 0: break;
+            default: return false;
+            }
+            if (reg) save(reg, -16 - 8 * slot + 8 * index);
+            locations >>= 3;
+        }
+        return true;
+    }
+    if (mode == 0) {
+        rules.cfaRegister = 7;
+        rules.cfaOffset = 8;
+        return true;
+    }
+    if (mode != 0x02000000u && mode != 0x03000000u) return false;
+    const auto stackEncoded = (encoding >> 16) & 0xffu;
+    const auto stackAdjust = (encoding >> 13) & 7u;
+    const auto regCount = (encoding >> 10) & 7u;
+    auto permutation = encoding & 0x3ffu;
+    if (regCount > 6) return false;
+    std::uint32_t stackSize = stackEncoded * 8u;
+    if (mode == 0x03000000u) {
+        if (frame.functionStart == 0) return false;
+        std::uint32_t immediate = 0;
+        std::memcpy(&immediate, reinterpret_cast<const void*>(frame.functionStart + stackEncoded), 4);
+        stackSize = immediate + 8u * stackAdjust;
+    }
+    if (stackSize > 0x10000000u) return false;
+    rules.cfaRegister = 7;
+    rules.cfaOffset = static_cast<std::intptr_t>(stackSize);
+    unsigned permuted[6] = {};
+    switch (regCount) {
+    case 6:
+        permuted[0] = permutation / 120; permutation -= permuted[0] * 120;
+        permuted[1] = permutation / 24; permutation -= permuted[1] * 24;
+        permuted[2] = permutation / 6; permutation -= permuted[2] * 6;
+        permuted[3] = permutation / 2; permutation -= permuted[3] * 2;
+        permuted[4] = permutation; permuted[5] = 0;
+        break;
+    case 5:
+        permuted[0] = permutation / 120; permutation -= permuted[0] * 120;
+        permuted[1] = permutation / 24; permutation -= permuted[1] * 24;
+        permuted[2] = permutation / 6; permutation -= permuted[2] * 6;
+        permuted[3] = permutation / 2; permutation -= permuted[3] * 2;
+        permuted[4] = permutation;
+        break;
+    case 4:
+        permuted[0] = permutation / 60; permutation -= permuted[0] * 60;
+        permuted[1] = permutation / 12; permutation -= permuted[1] * 12;
+        permuted[2] = permutation / 3; permutation -= permuted[2] * 3;
+        permuted[3] = permutation;
+        break;
+    case 3:
+        permuted[0] = permutation / 20; permutation -= permuted[0] * 20;
+        permuted[1] = permutation / 4; permutation -= permuted[1] * 4;
+        permuted[2] = permutation;
+        break;
+    case 2:
+        permuted[0] = permutation / 5; permutation -= permuted[0] * 5;
+        permuted[1] = permutation;
+        break;
+    case 1: permuted[0] = permutation; break;
+    case 0: break;
+    default: return false;
+    }
+    bool used[7] = {};
+    static const unsigned dwarf[7] = {0, 3, 12, 13, 14, 15, 6};
+    for (unsigned index = 0; index < regCount; ++index) {
+        unsigned renumbered = 0;
+        unsigned reg = 0;
+        for (unsigned candidate = 1; candidate < 7; ++candidate) {
+            if (used[candidate]) continue;
+            if (renumbered == permuted[index]) { reg = dwarf[candidate]; used[candidate] = true; break; }
+            ++renumbered;
+        }
+        if (reg == 0) return false;
+        save(reg, -8 * static_cast<std::intptr_t>(regCount - index + 1));
+    }
+    return true;
+}
+#endif
+
 bool DecodeFrame(_Unwind_Context& context, Frame& frame) {
     Lookup query {context.registers[16] - !context.signalFrame};
 #if defined(__linux__) || defined(__APPLE__)
@@ -292,6 +645,7 @@ bool DecodeFrame(_Unwind_Context& context, Frame& frame) {
 #endif
         dl_iterate_phdr(FindFrame, &query);
 #ifdef __APPLE__
+    if (!query.fde && AppleCompact(context, frame, query)) return true;
     if (!query.fde) {
         Dl_info image {};
         if (!dladdr(reinterpret_cast<void*>(query.pc), &image) || !image.dli_fbase) return false;
@@ -315,7 +669,11 @@ bool DecodeFrame(_Unwind_Context& context, Frame& frame) {
         return false;
     }
 #endif
-    return DecodeCandidate(context, frame, query);
+    if (DecodeCandidate(context, frame, query)) return true;
+#ifdef __APPLE__
+    return AppleCompact(context, frame, query);
+#endif
+    return false;
 #else
     const Byte* base = nullptr;
     const auto* nt = ImageHeaders(query.pc, base);
@@ -423,6 +781,14 @@ bool GetRules(_Unwind_Context& context, Frame& frame, Rules& rules) {
         return false;
 #endif
     }
+#ifdef __APPLE__
+    if (frame.useCompact) {
+        if (!CompactRules(frame, rules)) return false;
+        if (rules.cfaRegister >= 17) return false;
+        context.cfa = context.registers[rules.cfaRegister] + rules.cfaOffset;
+        return true;
+    }
+#endif
     Rules initial;
     if (!Instructions(frame.cieBegin, frame.cieEnd, frame, ~Word(0), initial, {})) return false;
 #ifdef _WIN32
