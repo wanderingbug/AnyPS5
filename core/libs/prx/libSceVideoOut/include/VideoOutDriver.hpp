@@ -15,6 +15,10 @@
 #include <future>
 #include <memory>
 #include <stdexcept>
+#ifdef __APPLE__
+#include <pthread.h>
+extern "C" void Aps5PumpMainRunLoop_nid_no_patch();
+#endif
 #include "prx/libSceAgcDriver/Execution/include/VideoOutput.hpp"
 #include "prx/libSceAgcDriver/Execution/include/DisplayBuffer.hpp"
 #include "prx/libSceVideoOut/include/DisplayWindow.hpp"
@@ -117,9 +121,47 @@ struct EventRegistration {
     uint64_t generation = 0;
 };
 
+#ifdef __APPLE__
+struct VblankWait {
+    std::condition_variable_any cond;
+    void notify_one() { cond.notify_one(); }
+    void notify_all() { cond.notify_all(); }
+    template <class Lock, class Predicate>
+    void wait(Lock& lock, std::stop_token token, Predicate pred) {
+        if (pthread_main_np() != 0) {
+            while (!pred() && !token.stop_requested()) {
+                lock.unlock();
+                Aps5PumpMainRunLoop_nid_no_patch();
+                lock.lock();
+            }
+            return;
+        }
+        cond.wait(lock, std::move(token), std::move(pred));
+    }
+    template <class Lock, class Rep, class Period, class Predicate>
+    bool wait_for(Lock& lock, const std::chrono::duration<Rep, Period>& rel, Predicate pred) {
+        if (pthread_main_np() != 0) {
+            const auto deadline = std::chrono::steady_clock::now() + rel;
+            while (!pred()) {
+                if (std::chrono::steady_clock::now() >= deadline) return pred();
+                lock.unlock();
+                Aps5PumpMainRunLoop_nid_no_patch();
+                lock.lock();
+            }
+            return true;
+        }
+        return cond.wait_for(lock, rel, std::move(pred));
+    }
+};
+#endif
+
 struct VideoOutConfig {
     std::mutex mutex;
+#ifdef __APPLE__
+    VblankWait vblankCond;
+#else
     std::condition_variable_any vblankCond;
+#endif
 
     std::vector<EventRegistration> flipEvents;
     std::vector<EventRegistration> vblankEvents;
@@ -233,6 +275,9 @@ public:
 private:
     bool close(int handle);
     void presentLoop(std::stop_token token, std::promise<void>& started);
+#ifdef __APPLE__
+    friend void runPresenterOnMainThread(void* context);
+#endif
     void vblankLoop(std::stop_token token);
     void vblankEnd(std::uint64_t tick);
     void updateDisplayRefreshRate();
@@ -254,6 +299,12 @@ private:
 
     std::jthread presentThread;
     std::jthread vblankThread;
+#ifdef __APPLE__
+    bool presentOnMain = false;
+    std::stop_source presentStop;
+    std::promise<void> presentStarted;
+    std::promise<void> presentFinished;
+#endif
 };
 
 #endif

@@ -24,6 +24,9 @@ target_link_libraries(libSceVideoOut PRIVATE libSceAgcDriver libScePad libSceMou
 if(WIN32)
     target_link_libraries(libSceVideoOut PRIVATE comctl32 dxgi)
 endif()
+if(APPLE)
+    target_link_libraries(libSceVideoOut PRIVATE "-framework CoreFoundation")
+endif()
 set_target_properties(libSceVideoOut PROPERTIES CXX_EXTENSIONS OFF)
 configure_windows_unwind(libSceVideoOut)
 

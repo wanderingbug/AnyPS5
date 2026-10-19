@@ -30,6 +30,19 @@
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libc/include/PreciseWait.hpp"
 #include "prx/libc/include/Shutdown.hpp"
+#ifdef __APPLE__
+#include <dispatch/dispatch.h>
+#include <CoreFoundation/CoreFoundation.h>
+#include <type_traits>
+#include <unistd.h>
+extern "C" bool Aps5MainThreadIsServing_nid_no_patch();
+extern "C" void Aps5PostMainThreadJob_nid_no_patch(void (*job)(void*), void* context);
+
+extern "C" void Aps5PumpMainRunLoop_nid_no_patch() {
+    if (pthread_main_np() == 0) return;
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
+}
+#endif
 
 namespace {
 
@@ -39,6 +52,41 @@ constexpr std::uint64_t PRESENT_POLL_MICROS = 10000;
 void require(bool condition, const char* reason) {
     if (!condition) throw std::runtime_error(std::string("VideoOut: ") + reason);
 }
+
+#ifdef __APPLE__
+template <class Body>
+void RunWhereAppKitCanDraw(Body&& body) {
+    using Fn = std::remove_reference_t<Body>;
+    if (pthread_main_np() != 0) {
+        body();
+        return;
+    }
+    struct Job {
+        Fn* body;
+        std::exception_ptr error;
+        dispatch_semaphore_t done;
+        static void Run(void* raw) {
+            auto* job = static_cast<Job*>(raw);
+            try {
+                (*job->body)();
+            } catch (...) {
+                job->error = std::current_exception();
+            }
+            dispatch_semaphore_signal(job->done);
+        }
+    };
+    Job job{&body, {}, dispatch_semaphore_create(0)};
+    dispatch_async_f(dispatch_get_main_queue(), &job, &Job::Run);
+    dispatch_semaphore_wait(job.done, DISPATCH_TIME_FOREVER);
+    dispatch_release(job.done);
+    if (job.error) std::rethrow_exception(job.error);
+}
+
+void drainPresenterRunLoop() {
+    while (CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0, true) == kCFRunLoopRunHandledSource) {
+    }
+}
+#endif
 
 std::vector<const char*> windowExtensions(SDL_Window* window) {
     unsigned extensionCount = 0;
@@ -267,6 +315,27 @@ VideoOutDriver& VideoOutDriver::Get() {
     return instance;
 }
 
+#ifdef __APPLE__
+void runPresenterOnMainThread(void* context) {
+    auto& driver = *static_cast<VideoOutDriver*>(context);
+    try {
+        AgcDriverRaiseWorkerThreadPriority_nid_postfix("presenter");
+        driver.presentLoop(driver.presentStop.get_token(), driver.presentStarted);
+    } catch (...) {
+        try {
+            driver.presentStarted.set_exception(std::current_exception());
+        } catch (const std::future_error&) {
+        }
+    }
+    SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER);
+    try {
+        driver.presentFinished.set_value();
+    } catch (const std::future_error&) {
+    }
+    for (;;) ::pause();
+}
+#endif
+
 VideoOutDriver::VideoOutDriver() {
     SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
 #ifdef _WIN32
@@ -278,6 +347,32 @@ VideoOutDriver::VideoOutDriver() {
     if (SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
         throw std::runtime_error(std::string("SDL_InitSubSystem(VIDEO | GAMECONTROLLER) failed: ") + SDL_GetError());
     }
+#ifdef __APPLE__
+    if (Aps5MainThreadIsServing_nid_no_patch()) {
+        presentOnMain = true;
+        bool posted = false;
+        try {
+            AgcDriverWaitIdle_nid_postfix();
+            Aps5PostMainThreadJob_nid_no_patch(&runPresenterOnMainThread, this);
+            posted = true;
+            presentStarted.get_future().get();
+            vblankThread = std::jthread([this](std::stop_token token) { vblankLoop(token); });
+            LibcRegisterShutdown_nid_postfix([] { VideoOutDriver::Get().Shutdown(); });
+        } catch (...) {
+            presentStop.request_stop();
+            flipQueue->changed.NotifyAll();
+            if (posted) presentFinished.get_future().wait();
+            else SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER);
+            if (vblankThread.joinable()) {
+                vblankThread.request_stop();
+                flipQueue->changed.NotifyAll();
+                vblankThread.join();
+            }
+            throw;
+        }
+        return;
+    }
+#endif
     try {
         AgcDriverWaitIdle_nid_postfix();
         std::promise<void> started;
@@ -291,6 +386,11 @@ VideoOutDriver::VideoOutDriver() {
             }
             presentLoop(token, started);
         });
+#ifdef __APPLE__
+        if (pthread_main_np() != 0) {
+            while (attached.wait_for(std::chrono::seconds(0)) != std::future_status::ready) Aps5PumpMainRunLoop_nid_no_patch();
+        }
+#endif
         attached.get();
         vblankThread = std::jthread([this](std::stop_token token) { vblankLoop(token); });
         LibcRegisterShutdown_nid_postfix([] { VideoOutDriver::Get().Shutdown(); });
@@ -315,6 +415,32 @@ VideoOutDriver::~VideoOutDriver() {
 }
 
 void VideoOutDriver::Shutdown() {
+#ifdef __APPLE__
+    if (presentOnMain) {
+        std::lock_guard shutdownLock(shutdownMutex);
+        if (stopped) return;
+        LibcRequestShutdown_nid_postfix();
+        {
+            std::lock_guard queueLock(flipQueue->mutex);
+            flipQueue->stopping = true;
+        }
+        presentStop.request_stop();
+        vblankThread.request_stop();
+        flipQueue->changed.NotifyAll();
+        presentFinished.get_future().wait();
+        vblankThread.join();
+        {
+            std::lock_guard lock(mutex);
+            for (int handle = 1; handle < VIDEO_OUT_NUM_MAX; ++handle) {
+                if (outputs[handle]) close(handle);
+            }
+        }
+        stopped = true;
+        std::lock_guard lock(flipQueue->mutex);
+        if (flipQueue->failure) std::rethrow_exception(flipQueue->failure);
+        return;
+    }
+#endif
     require(std::this_thread::get_id() != presentThread.get_id(), "presentation thread cannot stop itself");
     std::lock_guard shutdownLock(shutdownMutex);
     if (stopped) return;
@@ -556,6 +682,7 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
         req.cfg->lastFlipVblank = req.cfg->vblankStatus.count;
     }
     require(req.width != 0 && req.height != 0 && req.width <= static_cast<uint32_t>(std::numeric_limits<int>::max()) && req.height <= static_cast<uint32_t>(std::numeric_limits<int>::max()), "invalid window dimensions");
+    const auto presentOnHost = [&] {
     if (req.cfg->busType == VIDEO_OUT_BUS_TYPE_OVERLAY) {
         std::lock_guard lock(req.cfg->mutex);
         req.cfg->CheckAlive();
@@ -587,6 +714,12 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
         window.UpdateTitle();
         timing.Mark("window_title");
     }
+    };
+#ifdef __APPLE__
+    RunWhereAppKitCanDraw(presentOnHost);
+#else
+    presentOnHost();
+#endif
     std::lock_guard lock(req.cfg->mutex);
     timing.Mark("completion_mutex_wait");
     req.cfg->CheckAlive();
@@ -623,15 +756,27 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
 
 void VideoOutDriver::presentLoop(std::stop_token token, std::promise<void>& started) {
     try {
+#ifdef __APPLE__
+        RunWhereAppKitCanDraw([&] {
+#endif
         window.Ensure(VIDEO_OUT_DEFAULT_WIDTH, VIDEO_OUT_DEFAULT_HEIGHT);
         updateDisplayRefreshRate();
         hdrProbe.Poll(window.Handle());
         const auto extensions = windowExtensions(window.Handle());
         AgcDriverAttachWindow_nid_postfix({window.Handle(), extensions, &createWindowSurface, &windowDrawableSize, VIDEO_OUT_DEFAULT_WIDTH, VIDEO_OUT_DEFAULT_HEIGHT, nullptr});
         hdrGeneration = AgcDriver::CurrentHostHdr().generation;
+#ifdef __APPLE__
+        });
+#endif
     } catch (...) {
+#ifdef __APPLE__
+        RunWhereAppKitCanDraw([&] {
+#endif
         hdrProbe.Release();
         window.Destroy();
+#ifdef __APPLE__
+        });
+#endif
         started.set_exception(std::current_exception());
         return;
     }
@@ -660,6 +805,9 @@ void VideoOutDriver::presentLoop(std::stop_token token, std::promise<void>& star
                 }
             }
 
+#ifdef __APPLE__
+            if (pthread_main_np() != 0) drainPresenterRunLoop();
+#endif
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_QUIT) {
@@ -739,8 +887,14 @@ void VideoOutDriver::presentLoop(std::stop_token token, std::promise<void>& star
         std::lock_guard lock(flipQueue->mutex);
         if (!flipQueue->failure) flipQueue->failure = std::current_exception();
     }
+#ifdef __APPLE__
+    RunWhereAppKitCanDraw([&] {
+#endif
     hdrProbe.Release();
     window.Destroy();
+#ifdef __APPLE__
+    });
+#endif
 }
 
 void VideoOutDriver::vblankLoop(std::stop_token token) {
