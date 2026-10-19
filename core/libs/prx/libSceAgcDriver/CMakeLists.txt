@@ -3122,3 +3122,6 @@ if(BUILD_TESTING)
     list(FILTER agcRegisteredTests EXCLUDE REGEX "^(agc_pipeline_journal|agc_driver_pipeline_journal)$")
     set_property(TEST ${agcRegisteredTests} APPEND PROPERTY ENVIRONMENT "APS5_NO_PIPELINE_JOURNAL=1")
 endif()
+
+include(${CMAKE_SOURCE_DIR}/cmake/MacosTestSkips.cmake)
+aps5_macos_skip_agc()

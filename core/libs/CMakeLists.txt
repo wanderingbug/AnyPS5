@@ -223,6 +223,18 @@ endif()
 
 add_custom_target(libs DEPENDS ${PATCHED_OUTPUTS})
 
+if(APPLE)
+    add_executable(macos_address_space ${CMAKE_SOURCE_DIR}/tools/macos_address_space.cpp)
+    set_target_properties(macos_address_space PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    add_executable(macos_guest_thread_self EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/tests/GuestThreadSelf.cpp)
+    target_include_directories(macos_guest_thread_self PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(macos_guest_thread_self PRIVATE libkernel libc)
+    set_target_properties(macos_guest_thread_self PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+        BUILD_RPATH "${UNPATCHED_DIR}")
+    add_dependencies(libs macos_address_space macos_guest_thread_self)
+endif()
+
 if(BUILD_TESTING)
     add_test_executable(guest_posix_scalar_io_tests tests/GuestPosixScalarIo.cpp)
     target_include_directories(guest_posix_scalar_io_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

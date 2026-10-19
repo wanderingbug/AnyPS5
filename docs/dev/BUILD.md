@@ -52,6 +52,19 @@ therefore tests the previous binaries and can show no effect at all.
 
 [Relinker usage and runtime layout](../user/USAGE.md).
 
+## macOS guest smoke
+
+`libs` on macOS also builds `build/macos_address_space` and `build/macos_guest_thread_self`. `macos_address_space` is an x86-64 program. On Apple silicon it measures Rosetta. It prints host mappings from the relinked image base (`0x140000000`) through the guest window (`0x200000000` through `0xFC00000000`) and which fixed reservations succeed.
+
+`tools/macos_guest_smoke.sh` relinks the repository macOS import fixture (`puts` and `exit` by NID) and runs it beside the patched libraries, then runs `macos_guest_thread_self`, which starts a guest thread and joins it.
+
+```sh
+./build/macos_address_space > address-space.log 2>&1 && echo OK || { echo FAILED; tail -40 address-space.log; }
+tools/macos_guest_smoke.sh build > guest-smoke.log 2>&1 && echo OK || { echo FAILED; tail -80 guest-smoke.log; }
+```
+
+`ctest` treats exit code 77 as a skip. Tests that still fail for a known macOS gap export `APS5_MACOS_SKIP` and return 77 before `main`. The names and reasons are in [MacosTestSkips.cmake](../../cmake/MacosTestSkips.cmake). A title does not set `APS5_MACOS_SKIP`.
+
 ## Windows setup and troubleshooting
 
 The full build also requires Python 3 for glslang and Git for Windows with Bash for libusb's version-header generation. A minimal Git installation without Bash is insufficient for the full build.

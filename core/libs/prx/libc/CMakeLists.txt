@@ -33,6 +33,7 @@ target_sources(libc PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/specifics/windows/CallTrace.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/specifics/linux/DlIteratePhdr.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/specifics/macos/GuestImages.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/specifics/macos/TestSkip.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Strings.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/AllocatingStrings.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/WideConversion.cpp
@@ -952,3 +953,6 @@ if(MINGW)
             FAIL_REGULAR_EXPRESSION "stack words from rsp;data at stack words")
     endif()
 endif()
+
+include(${CMAKE_SOURCE_DIR}/cmake/MacosTestSkips.cmake)
+aps5_macos_skip_libc()
