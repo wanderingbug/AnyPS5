@@ -24,6 +24,7 @@
 #include <utility>
 #endif
 #ifdef __APPLE__
+#include <cstring>
 #include <dlfcn.h>
 #include <mach-o/getsect.h>
 #include <mach-o/loader.h>
@@ -105,6 +106,19 @@ extern "C" void _Unwind_DeleteException(_Unwind_Exception*);
 #endif
 
 namespace LibcUnwind {
+#ifdef __APPLE__
+thread_local Word unwindMissPc = 0;
+
+extern "C" bool LibcUnwindMissAtHostThreadRoot_nid_no_patch() {
+    Dl_info image {};
+    if (!dladdr(reinterpret_cast<void*>(unwindMissPc), &image) || image.dli_sname == nullptr) return false;
+    const char* name = image.dli_sname;
+    return std::strcmp(name, "thread_start") == 0 || std::strcmp(name, "_thread_start") == 0;
+}
+#else
+extern "C" bool LibcUnwindMissAtHostThreadRoot_nid_no_patch() { return false; }
+#endif
+
 _Unwind_Reason_Code CallPersonality(Word personality, _Unwind_Action actions, _Unwind_Exception* exception, _Unwind_Context* context) {
 #ifdef _WIN32
     const auto* code = reinterpret_cast<const Byte*>(personality);
@@ -286,6 +300,9 @@ bool VirtualUnwind(const _Unwind_Context& context, _Unwind_Context& caller) {
 
 bool DecodeFrame(_Unwind_Context& context, Frame& frame) {
     Lookup query {context.registers[16] - !context.signalFrame};
+#ifdef __APPLE__
+    unwindMissPc = query.pc;
+#endif
 #if defined(__linux__) || defined(__APPLE__)
 #ifdef LIBC_UNWIND_FIND_OBJECT
     if (!FindFrameFast(query))
@@ -624,6 +641,8 @@ _Unwind_Reason_Code APS5_VABI _Unwind_Backtrace_nid_postfix(_Unwind_Trace_Fn tra
 }
 
 #else
+
+extern "C" bool LibcUnwindMissAtHostThreadRoot_nid_no_patch() { return false; }
 
 extern "C" {
 _Unwind_Reason_Code APS5_VABI _Unwind_RaiseException_nid_postfix(_Unwind_Exception*) { std::abort(); }

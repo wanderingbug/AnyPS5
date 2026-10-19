@@ -214,6 +214,7 @@ public:
     VideoOutDriver();
     ~VideoOutDriver();
     void Shutdown();
+    void RememberExitFrames(const VideoOutConfig& cfg);
 
     VideoOutDriver(const VideoOutDriver&) = delete;
     VideoOutDriver& operator=(const VideoOutDriver&) = delete;
@@ -239,8 +240,18 @@ private:
     void processFlip(FlipRequest& req);
     void triggerEvents(VideoOutConfig& cfg, int eventKind, void* triggerData);
     void pollHostHdr();
+    void dumpExitFrames();
+
+    struct ExitFrameNote {
+        const VideoOutConfig* config = nullptr;
+        std::vector<AgcDriver::DisplayBuffer> buffers;
+    };
 
     std::mutex mutex;
+    std::mutex exitFrameMutex;
+    std::vector<ExitFrameNote> exitFrames;
+    std::atomic<bool> presentReturned{false};
+    std::atomic<bool> vblankReturned{false};
     std::mutex shutdownMutex;
     bool stopped = false;
     std::array<std::shared_ptr<VideoOutConfig>, VIDEO_OUT_NUM_MAX> contexts;

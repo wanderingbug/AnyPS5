@@ -67,6 +67,7 @@ int CommitBufferGroup(const std::string& function, VideoOutConfig& cfg, int setI
         AgcDriverStoreGuestLabel_nid_postfix(&label, 0);
     }
     if (group.ps4) cfg.ps4 = true;
+    VideoOutDriver::Get().RememberExitFrames(cfg);
     return setIndex;
 }
 
@@ -229,6 +230,7 @@ int APS5_VABI sceVideoOutSubmitChangeBufferAttribute2(int handle, int setIndex, 
         AgcDriverCheckGuestMemory_nid_postfix(reinterpret_cast<const void*>(display.address), AgcDriverDisplayBufferSize_nid_postfix(display), display.alignment);
     }
     cfg->groups[setIndex] = group;
+    VideoOutDriver::Get().RememberExitFrames(*cfg);
     return 0;
 } catch (const ProcessShutdown&) {
     LibcAwaitExit_nid_postfix();
@@ -259,6 +261,7 @@ int APS5_VABI sceVideoOutUnregisterBuffers(int handle, int setIndex) try {
             buf = VideoOutBuffer{};
         }
     }
+    VideoOutDriver::Get().RememberExitFrames(*cfg);
     return 0;
 } catch (const ProcessShutdown&) {
     LibcAwaitExit_nid_postfix();
