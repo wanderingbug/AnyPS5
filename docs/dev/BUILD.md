@@ -52,6 +52,20 @@ therefore tests the previous binaries and can show no effect at all.
 
 [Relinker usage and runtime layout](../user/USAGE.md).
 
+## macOS
+
+On macOS, `cmake --build build --target libs` also runs [fetch_apple_vulkan.sh](../../tools/fetch_apple_vulkan.sh). That script downloads the MoltenVK 1.4.2 macOS package, a universal `libMoltenVK.dylib` with an x86-64 slice, and builds Khronos Vulkan-Loader 1.4.321 for `CMAKE_OSX_ARCHITECTURES`. The results land in `build/vulkan/lib` (`libMoltenVK.dylib`, `libvulkan.dylib`) and `build/vulkan/share/vulkan/icd.d/MoltenVK_icd.json`. An arm64 MoltenVK does not load into the x86-64 process.
+
+`tools/macos_moltenvk_smoke.sh` relinks the repository square guest and presents one frame through SDL, the fetched loader, and MoltenVK. The guest is [square.c](../../core/relinker/relinker/tests/macos/square.c), an original 320x180 linear BGRA program: a green square, a player sprite, and two coins. The script writes `app0/sce_sys/param.json` beside the relinked executable, copies the dylibs from `build/vulkan`, and sets `VK_DRIVER_FILES` to an ICD whose `library_path` is that copy of `libMoltenVK.dylib`. `APS5_DUMP_FRAMES=1`, `APS5_DUMP_SCALE=1`, `APS5_NO_GPU_DUMP=1` and `APS5_DUMP_DIR` save `frame_000.bmp` from the CPU copy of the submitted linear buffer. The script checks the background, the green square, the player sprite and both coins. The guest finishes with `exit`. `--interactive` reads the pad and leaves the window open for 30 seconds, or until Escape or Options, and does not check the bitmap.
+
+The presenter creates the SDL window on the process main thread. `Aps5StartGuest` runs the guest entry on a secondary thread so AppKit can draw.
+
+```sh
+tools/macos_moltenvk_smoke.sh build > moltenvk-square.log 2>&1 && echo OK || { echo FAILED; tail -80 moltenvk-square.log; }
+```
+
+Leave `ANYPS5_REQUIRE_VULKAN` unset on macOS. A missing MoltenVK feature skips the test.
+
 ## Windows setup and troubleshooting
 
 The full build also requires Python 3 for glslang and Git for Windows with Bash for libusb's version-header generation. A minimal Git installation without Bash is insufficient for the full build.
