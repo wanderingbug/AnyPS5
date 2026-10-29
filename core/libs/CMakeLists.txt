@@ -268,6 +268,20 @@ endif()
 
 add_custom_target(libs DEPENDS ${PATCHED_OUTPUTS})
 
+option(ANYPS5_FETCH_APPLE_VULKAN "Download MoltenVK and build an x86-64 Vulkan loader when building libs on Apple" OFF)
+if(APPLE AND ANYPS5_FETCH_APPLE_VULKAN)
+    set(ANYPS5_APPLE_VULKAN_ARCH "${CMAKE_OSX_ARCHITECTURES}")
+    if(NOT ANYPS5_APPLE_VULKAN_ARCH)
+        set(ANYPS5_APPLE_VULKAN_ARCH "x86_64")
+    endif()
+    add_custom_target(apple_vulkan
+        COMMAND /bin/bash "${CMAKE_SOURCE_DIR}/tools/fetch_apple_vulkan.sh" "${CMAKE_BINARY_DIR}/vulkan" "${ANYPS5_APPLE_VULKAN_ARCH}"
+        COMMENT "Fetching MoltenVK and building the Vulkan loader"
+        VERBATIM
+    )
+    add_dependencies(libs apple_vulkan)
+endif()
+
 include(prx/libSceLibreSsl/ProtocolSelection.cmake)
 
 if(BUILD_TESTING)
