@@ -366,6 +366,18 @@ Set `APS5_THREAD_PRIORITY=high` to raise the AGC driver's queue workers and the 
 
 The shader recompilation logic in [core/shader/recompiler](../../core/shader/recompiler) is isolated from the rest of the project and is a pure function of its input data, designed for integration into any other project. The current CMake target also includes cache support and links a supplied runtime target, glslang, and optionally SPIRV-Tools.
 
+## Hardened runtime
+
+`tools/macos_sign_guest.sh` ad-hoc signs a relinked `eboot` with `--options runtime` and `tools/macos_hardened_runtime.entitlements`. A second argument is a directory of `*.prx` and `*.dylib` files; those are signed without the entitlements. `CODESIGN_IDENTITY` replaces the ad-hoc identity.
+
+The entitlements follow the calls the guest already makes:
+
+- `com.apple.security.cs.allow-unsigned-executable-memory`. `GuestArena.cpp` maps anonymous pages with `PROT_EXEC` and `PROT_READ | PROT_WRITE | PROT_EXEC`. `DirectMemory.cpp` maps an Apple file without `PROT_EXEC` and then `mprotect`s the execute bit on. `CallTrace.cpp` remaps a writable page with `mach_vm_remap` and `mach_vm_protect`s it `VM_PROT_READ | VM_PROT_EXECUTE`. None of those paths pass `MAP_JIT`, so this branch does not add `MAP_JIT` or `com.apple.security.cs.allow-jit`.
+- `com.apple.security.cs.allow-dyld-environment-variables`. `MimallocMacOs.cpp` sets `DYLD_INSERT_LIBRARIES` and `execv`s the same executable when `APS5_MIMALLOC=1`. The square smoke also puts the Vulkan loader on `DYLD_LIBRARY_PATH`.
+- `com.apple.security.cs.disable-library-validation`. The relinked executable loads the sibling `.prx` files and the MoltenVK dylibs, which are not Apple-signed.
+
+`tools/macos_hardened_probe.cpp` is the measurement. After the same signature, it prints whether `mmap` of read-write-execute memory, `mprotect` to read-execute, and the call-trace remap succeed, and it prints the value of `DYLD_INSERT_LIBRARIES`. A non-zero errno or Mach code is a result, not a guess about Rosetta. `tools/macos_signed_smokes.sh` signs that probe, then signs and reruns the import guest and the square guest from an integration build. It prints whether the mimalloc restart log says dyld loaded `libmimalloc.dylib`. Whether a hardened x86-64 process under Rosetta accepts these mappings, and whether dyld honors `DYLD_INSERT_LIBRARIES` after the entitlement, has to be read from that output on a Mac.
+
 ## Register context tests
 
 The x86-64 register capture and restore tests can be built separately on Linux and macOS, without submodules or the prx libraries. On macOS:
