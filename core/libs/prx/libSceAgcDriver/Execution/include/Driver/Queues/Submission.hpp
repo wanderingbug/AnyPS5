@@ -56,6 +56,7 @@ struct QueueWorker {
     std::uint64_t executingWaitFree = 0;
     bool executingWaits = false;
     std::thread thread;
+    std::atomic<bool> exited{false};
 };
 
 }

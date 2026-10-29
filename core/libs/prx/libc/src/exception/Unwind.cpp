@@ -108,6 +108,19 @@ extern "C" void _Unwind_DeleteException(_Unwind_Exception*);
 #endif
 
 namespace LibcUnwind {
+#ifdef __APPLE__
+thread_local Word unwindMissPc = 0;
+
+extern "C" bool LibcUnwindMissAtHostThreadRoot_nid_no_patch() {
+    Dl_info image {};
+    if (!dladdr(reinterpret_cast<void*>(unwindMissPc), &image) || image.dli_sname == nullptr) return false;
+    const char* name = image.dli_sname;
+    return std::strcmp(name, "thread_start") == 0 || std::strcmp(name, "_thread_start") == 0;
+}
+#else
+extern "C" bool LibcUnwindMissAtHostThreadRoot_nid_no_patch() { return false; }
+#endif
+
 #ifdef _WIN32
 static bool Readable(Word address, std::size_t size) {
     for (Word cursor = address; cursor - address < size;) {
@@ -462,6 +475,9 @@ bool CompactRules(Frame& frame, Rules& rules) {
 
 bool DecodeFrame(_Unwind_Context& context, Frame& frame) {
     Lookup query {context.registers[16] - !context.signalFrame};
+#ifdef __APPLE__
+    unwindMissPc = query.pc;
+#endif
 #if defined(__linux__) || defined(__APPLE__)
 #ifdef LIBC_UNWIND_FIND_OBJECT
     if (!FindFrameFast(query))
@@ -811,6 +827,8 @@ _Unwind_Reason_Code APS5_VABI _Unwind_Backtrace_nid_postfix(_Unwind_Trace_Fn tra
 }
 
 #else
+
+extern "C" bool LibcUnwindMissAtHostThreadRoot_nid_no_patch() { return false; }
 
 extern "C" {
 _Unwind_Reason_Code APS5_VABI _Unwind_RaiseException_nid_postfix(_Unwind_Exception*) { std::abort(); }
