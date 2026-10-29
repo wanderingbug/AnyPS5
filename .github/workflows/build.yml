@@ -56,6 +56,7 @@ jobs:
       relinker: ${{ steps.gate.outputs.relinker }}
       register-context: ${{ steps.gate.outputs.register-context }}
       write-watch: ${{ steps.gate.outputs.write-watch }}
+      macos-libs: ${{ steps.gate.outputs.macos-libs }}
       mingw-host-tests: ${{ steps.gate.outputs.mingw-host-tests }}
       full: ${{ steps.gate.outputs.full }}
       relinker-hosts: ${{ steps.gate.outputs.relinker-hosts }}
@@ -139,6 +140,10 @@ jobs:
                 registerContext: edits('register-context') ||
                   touches('core/libs/tests/register_context/', 'core/libs/tests/RegisterContext.cpp', libc),
                 writeWatch: edits('write-watch') || touches('core/libs/tests/write_watch/', 'core/libs/tests/WriteWatch.cpp', libc),
+                macosLibs: edits('macos-libs') || touches(
+                  libc, 'core/libs/prx/libkernel/', 'cmake/MacosTestSkips.cmake',
+                  'tools/macos_address_space.cpp', 'tools/macos_guest_smoke.sh', 'core/libs/CMakeLists.txt'
+                ),
                 mingwHostTests: edits('eligibility') || edits('windows') || touches(
                   'core/libs/', 'tools/build_mingw_host_only_tests.py',
                   'tools/tests/test_mingw_host_only_test_targets.py', 'CMakeLists.txt'
@@ -177,13 +182,15 @@ jobs:
               core.setOutput('relinker', run.relinker);
               core.setOutput('register-context', run.registerContext);
               core.setOutput('write-watch', run.writeWatch);
+              core.setOutput('macos-libs', run.macosLibs);
               core.setOutput('mingw-host-tests', false);
               core.setOutput('full', true);
               core.setOutput('relinker-hosts', relinkerHosts(true, true));
               await core.summary.addRaw(
                 `Building main at ${context.sha}: full builds enabled, ` +
                 `macOS relinker ${run.relinker ? 'enabled' : 'skipped'}, ` +
-                `register context tests ${run.registerContext ? 'enabled' : 'skipped'}, write watch tests ${run.writeWatch ? 'enabled' : 'skipped'}`
+                `register context tests ${run.registerContext ? 'enabled' : 'skipped'}, write watch tests ${run.writeWatch ? 'enabled' : 'skipped'}, ` +
+                `macOS libs ${run.macosLibs ? 'enabled' : 'skipped'}`
               ).write();
               return;
             }
@@ -260,6 +267,7 @@ jobs:
             }
             const registerContext = run.registerContext;
             const writeWatch = run.writeWatch;
+            const macosLibs = run.macosLibs;
             const { data: main } = await github.rest.repos.getBranch({ owner, repo, branch: 'main' });
             core.setOutput('sha', main.commit.sha);
             core.setOutput('pr', pulls.map((pull) => pull.number).join(' '));
@@ -267,6 +275,7 @@ jobs:
             core.setOutput('relinker', relinker);
             core.setOutput('register-context', registerContext);
             core.setOutput('write-watch', writeWatch);
+            core.setOutput('macos-libs', macosLibs);
             core.setOutput('mingw-host-tests', !manual && run.mingwHostTests);
             core.setOutput('full', full);
             core.setOutput('relinker-hosts', relinkerHosts(full, linux));
@@ -275,7 +284,8 @@ jobs:
             await core.summary.addRaw(
               `${merged.join(', then ')}: full builds ${full ? 'enabled' : 'disabled'}, ` +
               `relinker ${relinker ? (full ? (linux ? 'enabled on macOS (the full builds run the Linux and Windows relinker tests)' : 'enabled on Linux and macOS (the full Windows build runs the Windows relinker tests)') : 'enabled') : 'skipped: no relinker file changed, or no commit or merged pull request in main was found for the author'}, ` +
-              `register context tests ${registerContext ? 'enabled' : 'skipped'}, write watch tests ${writeWatch ? 'enabled' : 'skipped'}`
+              `register context tests ${registerContext ? 'enabled' : 'skipped'}, write watch tests ${writeWatch ? 'enabled' : 'skipped'}, ` +
+              `macOS libs ${macosLibs ? 'enabled' : 'skipped'}`
             ).write();
 
   relinker:
@@ -730,4 +740,38 @@ jobs:
           [ -f ctest.log ] || exit 0
           awk '/Test +#[0-9]+: / && $NF == "sec" { for (i = 1; i <= NF; i++) if ($i ~ /^#[0-9]+:$/) name = $(i + 1); t = $(NF - 1) + 0; if (t > max[name]) max[name] = t }
             END { for (name in max) if (max[name] > 30) printf "::warning title=Slow test::%s took %.1f s on %s; tests must finish in 30 s (CONTRIBUTING.md)\n", name, max[name], ENVIRON["RUNNER_OS"] }' ctest.log
+
+  macos-libs:
+    needs: eligibility
+    if: ${{ needs.eligibility.outputs.macos-libs == 'true' }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.eligibility.outputs.sha }}
+          persist-credentials: false
+          submodules: recursive
+      - name: Merge the pull request into main
+        if: ${{ needs.eligibility.outputs.head != '' }}
+        shell: bash
+        env:
+          PR_NUMBER: ${{ needs.eligibility.outputs.pr }}
+          PR_HEAD: ${{ needs.eligibility.outputs.head }}
+        run: |
+          read -ra numbers <<< "$PR_NUMBER"
+          read -ra heads <<< "$PR_HEAD"
+          refspecs=()
+          for number in "${numbers[@]}"; do refspecs+=("+refs/pull/$number/head:refs/remotes/pull/$number"); done
+          fetch_options=()
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then fetch_options+=(--unshallow); fi
+          git fetch --no-tags "${fetch_options[@]}" origin "${refspecs[@]}"
+          for i in "${!numbers[@]}"; do
+            if [ "$(git rev-parse "refs/remotes/pull/${numbers[i]}")" != "${heads[i]}" ]; then echo "::error::Pull request #${numbers[i]} has newer commits; start a new build"; exit 1; fi
+            if ! git -c user.name=ci -c user.email=ci@localhost merge --no-ff --no-edit "refs/remotes/pull/${numbers[i]}"; then echo "::error::Pull request #${numbers[i]} does not merge cleanly into main and the pull requests before it; rebase it first"; exit 1; fi
+          done
+          git submodule update --init --recursive
+      - run: cmake -S . -B build-libs-ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_APPLE_SILICON_PROCESSOR=x86_64
+      - run: cmake --build build-libs-ci --parallel 3 --target guest_math_tests guest_atoi_tests guest_hostname_tests guest_character_tests guest_binary_word_tests log_macros_tests application_heap_tests macos_address_space
+      - run: ctest --test-dir build-libs-ci --output-on-failure --timeout 120 -R '^(guest_math|guest_atoi|guest_hostname|guest_character|guest_binary_word|log_macros|application_heap_invalid_metadata)$'
 

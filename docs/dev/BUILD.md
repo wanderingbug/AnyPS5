@@ -37,6 +37,12 @@ build-fuzz/tests/relinker_conversion_fuzzer build-fuzz/fuzz-corpus -fork=2 -max_
 git submodule update --init --recursive
 ```
 
+## macOS libraries
+
+The full build on macOS is x86-64. On Apple silicon, configure a fresh directory with `-DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_APPLE_SILICON_PROCESSOR=x86_64`. `libs` also builds `macos_address_space`, which prints which fixed reservations from `0x200000000` through `0xFC00000000` succeed, and `macos_guest_thread_self`. `tools/macos_guest_smoke.sh` relinks the macOS import fixture and runs that guest thread program. Linking `libkernel` still stops on `pthread_getattr_np`, `sched_getcpu`, and `epoll_create1` until those calls compile on Apple.
+
+`ctest` treats exit code 77 as a skip. On Apple, tests named in [MacosTestSkips.cmake](../../cmake/MacosTestSkips.cmake) export `APS5_MACOS_SKIP` and return 77 before `main`. A title does not set that variable. The macOS libs job in [build.yml](../../.github/workflows/build.yml) builds libc, not libkernel, and runs `guest_math`, `guest_atoi`, `guest_hostname`, `guest_character`, `guest_binary_word`, `log_macros`, and `application_heap_invalid_metadata` on `macos-15` as x86-64. It also compiles `macos_address_space`.
+
 ## Requirements
 
 - x86-64, Git, CMake 3.22.1 or newer, Ninja, C++20.
