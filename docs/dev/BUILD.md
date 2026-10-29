@@ -37,6 +37,20 @@ build-fuzz/tests/relinker_conversion_fuzzer build-fuzz/fuzz-corpus -fork=2 -max_
 git submodule update --init --recursive
 ```
 
+## macOS MoltenVK square
+
+`tools/macos_moltenvk_smoke.sh` is optional and is not a ctest. It downloads MoltenVK 1.4.2 (universal dylib, x86-64 slice required) and builds Vulkan-Loader 1.4.321 with [fetch_apple_vulkan.sh](../../tools/fetch_apple_vulkan.sh). Nothing is vendored. `cmake -DANYPS5_FETCH_APPLE_VULKAN=ON` runs that fetch as part of `libs`. The option is off by default, so a normal `libs` build does not download MoltenVK.
+
+The guest is [square.c](../../core/relinker/relinker/tests/macos/square.c), an original 320 by 180 linear BGRA program: a green square, a player sprite, and two coins. `square_elf.py` writes the ELF. The script relinks it with `--macos`, writes `app0/sce_sys/param.json`, and copies the fetched dylibs. The process working directory is that guest directory, so `frame_000.bmp` is written there. `APS5_DUMP_FRAMES=1`, `APS5_DUMP_SCALE=1`, `APS5_NO_GPU_DUMP=1` and `APS5_SYNC_FLIP=1` save the CPU copy of the submitted linear buffer. The script checks the background, the green square, the player sprite, and both coins. The guest finishes with `exit`. `--interactive` reads the pad and leaves the window open.
+
+The guest is started by `Aps5StartGuest` in [MainThreadMacOs.cpp](../../core/libs/prx/libkernel/Pthread/src/MainThreadMacOs.cpp) (#11048). SDL calls from VideoOut already hop to the main thread with `OnMainThread`. This smoke does not add another presenter.
+
+The loader copy is installed as both `libvulkan.dylib` and `libvulkan.1.dylib`. Current main still loads `libvulkan.so.1`. Presenting the square needs #11554, which loads `libvulkan.1.dylib` and enables `VK_KHR_portability_enumeration` on Apple. Without that, MoltenVK is not enumerated.
+
+```sh
+tools/macos_moltenvk_smoke.sh build-moltenvk > moltenvk-square.log 2>&1 && echo OK || { echo FAILED; tail -80 moltenvk-square.log; }
+```
+
 ## Requirements
 
 - x86-64, Git, CMake 3.22.1 or newer, Ninja, C++20.
