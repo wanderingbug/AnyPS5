@@ -2340,3 +2340,6 @@ if(BUILD_TESTING)
         endif()
     endforeach()
 endif()
+
+include(${CMAKE_SOURCE_DIR}/cmake/MacosTestSkips.cmake)
+aps5_macos_skip_kernel()

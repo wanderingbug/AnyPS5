@@ -282,6 +282,18 @@ if(APPLE AND ANYPS5_FETCH_APPLE_VULKAN)
     add_dependencies(libs apple_vulkan)
 endif()
 
+if(APPLE)
+    add_executable(macos_address_space ${CMAKE_SOURCE_DIR}/tools/macos_address_space.cpp)
+    set_target_properties(macos_address_space PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    add_executable(macos_guest_thread_self EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/tests/GuestThreadSelf.cpp)
+    target_include_directories(macos_guest_thread_self PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(macos_guest_thread_self PRIVATE libkernel libc)
+    set_target_properties(macos_guest_thread_self PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+        BUILD_RPATH "${UNPATCHED_DIR}")
+    add_dependencies(libs macos_address_space macos_guest_thread_self)
+endif()
+
 include(prx/libSceLibreSsl/ProtocolSelection.cmake)
 
 if(BUILD_TESTING)
